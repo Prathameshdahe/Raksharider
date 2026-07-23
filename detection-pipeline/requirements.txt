@@ -1,0 +1,20 @@
+# ── Core ML & computer vision ─────────────────────────────────────────────────
+opencv-python==4.10.0.84
+numpy==1.26.4
+ultralytics==8.2.87          # YOLOv8; downloads yolov8n.pt on first run
+easyocr==1.7.1               # OCR; downloads language models on first run
+
+# ── API framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.1
+uvicorn[standard]==0.30.3     # ASGI server with websocket + reload support
+python-multipart==0.0.9       # required for FastAPI file upload (UploadFile)
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7        # async test support (for future async tests)
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+# torch and torchvision are pulled in as transitive deps by ultralytics;
+# they are NOT pinned here to avoid platform-specific conflicts.
+# Run:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# on CPU-only machines, or the CUDA variant for GPU.

@@ -1,0 +1,55 @@
+# Detection Pipeline gitignore
+# ─────────────────────────────
+
+# Model weights (can be large, download on first run)
+models/
+*.pt
+*.onnx
+
+# Evidence output frames (runtime artefacts)
+pipeline/evidence_output/
+
+# Python artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Test / coverage artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Temp uploads / scratch
+*.tmp
+tmp/
+
+# Training dataset (large image files)
+dataset/
+
+# Training run artefacts (logs, checkpoints, tensorboard)
+runs/
+
+# Roboflow / downloaded dataset zips
+*.zip
