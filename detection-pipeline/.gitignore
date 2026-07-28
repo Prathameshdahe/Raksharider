@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Model weights (large binaries -- don't commit; download separately)
+models/*.pt
+models/*.onnx
+*.pt
+.EasyOCR/
+~/.cache/torch/
+*.cache/
+
+# Evidence/output artifacts (generated at runtime)
+pipeline/evidence_output/
+*.jpg
+*.jpeg
+*.png
+!docs/**/*.png
+!docs/**/*.jpg
+
+# Test videos/media
+tests/sample_videos/*.mp4
+tests/sample_videos/*.mov
+
+# Environment & secrets
+.env
+.env.local
+*.key
+config/secrets.yaml
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Android (if the app folder returns)
+*.iml
+.gradle/
+local.properties
+.cxx/
+captures/
+build/
+
+# Logs
+*.log
