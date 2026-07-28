@@ -1,0 +1,26 @@
+{
+  "_disclaimer": "This report is an automated recommendation for human review. It is NOT a final enforcement or fine decision.",
+  "run_id": "sample",
+  "generated_at": "2026-07-27T09:19:04.099160+00:00",
+  "status": "insufficient_evidence",
+  "severity_score": 0.4873,
+  "violations_detected": [
+    "triple_riding"
+  ],
+  "rider_count": 0,
+  "helmet_status": "unclear",
+  "number_plate": null,
+  "plate_read_confidence": 0.0,
+  "evidence_frame_timestamps": [
+    7.5075,
+    23.990633333333335
+  ],
+  "evidence_frame_paths": [
+    "pipeline\\evidence_output\\sample\\evidence_t7.508s.jpg",
+    "pipeline\\evidence_output\\sample\\evidence_t23.991s.jpg"
+  ],
+  "frame_consistency_ratio": 0.6056,
+  "avg_yolo_confidence": 0.6149,
+  "ocr_agreement_ratio": 0.0,
+  "notes": "Plate not readable in any frame. | Helmet status ambiguous — insufficient evidence in this clip."
+}

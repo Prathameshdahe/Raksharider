@@ -1,5 +1,4 @@
 # Root-level gitignore
-*.zip
 *.tar.gz
 __pycache__/
 *.pyc

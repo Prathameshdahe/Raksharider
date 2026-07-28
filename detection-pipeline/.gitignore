@@ -8,7 +8,7 @@ env/
 *.egg-info/
 .pytest_cache/
 
-# Model weights (large binaries -- don't commit; download separately)
+# Model weights -- excluded by default; override below for review builds
 models/*.pt
 models/*.onnx
 *.pt
@@ -16,7 +16,11 @@ models/*.onnx
 ~/.cache/torch/
 *.cache/
 
-# Evidence/output artifacts (generated at runtime)
+# Allow specific models for senior review
+!models/helmet_model.pt
+!models/ampr.pt
+
+# Evidence/output artifacts -- excluded by default
 pipeline/evidence_output/
 *.jpg
 *.jpeg
@@ -24,9 +28,16 @@ pipeline/evidence_output/
 !docs/**/*.png
 !docs/**/*.jpg
 
-# Test videos/media
+# Allow evidence output for senior review
+!pipeline/evidence_output/
+!pipeline/evidence_output/**
+
+# Test videos -- excluded by default
 tests/sample_videos/*.mp4
 tests/sample_videos/*.mov
+
+# Allow sample video for senior review
+!tests/sample_videos/sample.mp4
 
 # Environment & secrets
 .env
@@ -40,14 +51,6 @@ config/secrets.yaml
 .DS_Store
 Thumbs.db
 *.swp
-
-# Android (if the app folder returns)
-*.iml
-.gradle/
-local.properties
-.cxx/
-captures/
-build/
 
 # Logs
 *.log
