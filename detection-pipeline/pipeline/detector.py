@@ -19,36 +19,36 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
+# pyrefly: ignore [missing-import]
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 # ── Model paths ───────────────────────────────────────────────────────────────
 
-COCO_MODEL_PATH:   str           = os.environ.get("COCO_MODEL_PATH",   "yolov8n.pt")
-HELMET_MODEL_PATH: str           = os.environ.get("HELMET_MODEL_PATH", "models/helmet_model.pt")
-PLATE_MODEL_PATH:  Optional[str] = os.environ.get("PLATE_MODEL_PATH",  "models/ampr.pt")
+COCO_MODEL_PATH:   str        = os.environ.get("COCO_MODEL_PATH",   "yolov8n.pt")
+HELMET_MODEL_PATH: str        = os.environ.get("HELMET_MODEL_PATH", "models/helmet_model.pt")
+PLATE_MODEL_PATH:  str | None = os.environ.get("PLATE_MODEL_PATH",  "models/ampr.pt")
 
 # Confidence threshold for all models
 DETECTION_CONF_THRESHOLD: float = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.35"))
 
 # ── Class maps (raw model label → internal normalised label) ──────────────────
 
-COCO_CLASSES: Dict[str, str] = {
+COCO_CLASSES: dict[str, str] = {
     "person":     "person",
     "motorcycle": "motorcycle",
     "motorbike":  "motorcycle",
 }
 
-HELMET_CLASSES: Dict[str, str] = {
+HELMET_CLASSES: dict[str, str] = {
     "helmet":    "helmet",
     "no helmet": "no_helmet",
     "no_helmet": "no_helmet",
 }
 
-PLATE_CLASSES: Dict[str, str] = {
+PLATE_CLASSES: dict[str, str] = {
     "number_plate":  "license_plate",
     "numberplate":   "license_plate",
     "license_plate": "license_plate",
@@ -63,16 +63,16 @@ class Detection:
     """Single bounding-box detection. bbox = [x1, y1, x2, y2] pixels."""
     class_name: str
     confidence: float
-    bbox: List[float]
+    bbox: list[float]
 
 
 @dataclass
 class FrameDetections:
     """All merged detections for one frame."""
     timestamp: float
-    detections: List[Detection] = field(default_factory=list)
+    detections: list[Detection] = field(default_factory=list)
 
-    def by_class(self, cls: str) -> List[Detection]:
+    def by_class(self, cls: str) -> list[Detection]:
         return [d for d in self.detections if d.class_name == cls]
 
 
@@ -84,6 +84,7 @@ _plate_model  = None
 
 
 def _load(path: str, label: str):
+    # pyrefly: ignore [missing-import]
     from ultralytics import YOLO
     if not os.path.exists(path) and path != "yolov8n.pt":
         logger.warning("Model file not found: %s — skipping %s detection", path, label)
@@ -118,11 +119,11 @@ def _get_plate():
 
 # ── Inference helper ──────────────────────────────────────────────────────────
 
-def _infer(model, rgb: np.ndarray, class_map: Dict[str, str]) -> List[Detection]:
+def _infer(model, rgb: np.ndarray, class_map: dict[str, str]) -> list[Detection]:
     """Run one model and return mapped Detection objects."""
     if model is None:
         return []
-    dets: List[Detection] = []
+    dets: list[Detection] = []
     for result in model(rgb, verbose=False, conf=DETECTION_CONF_THRESHOLD):
         if result.boxes is None:
             continue
@@ -168,5 +169,5 @@ def detect_frame(frame_image: np.ndarray, timestamp: float = 0.0) -> FrameDetect
     return fd
 
 
-def detect_frames(frames) -> List[FrameDetections]:
+def detect_frames(frames) -> list[FrameDetections]:
     return [detect_frame(f.image, f.timestamp) for f in frames]
