@@ -38,10 +38,10 @@ detection-pipeline/
 
 Place these in `models/` before running:
 
-| File | Purpose |
-|------|---------|
-| `helmet_model.pt` | Fine-tuned YOLOv8n for `helmet` / `no helmet` |
-| `ampr.pt` | License plate detector (`Number_plate` class) |
+| File                | Purpose                                          |
+| ------------------- | ------------------------------------------------ |
+| `helmet_model.pt` | Fine-tuned YOLOv8n for`helmet` / `no helmet` |
+| `ampr.pt`         | License plate detector (`Number_plate` class)  |
 
 `yolov8n.pt` is auto-downloaded by ultralytics on first run (~6 MB).
 
@@ -139,18 +139,18 @@ severity = 0.5 * frame_consistency_ratio
          + 0.2 * ocr_agreement_ratio
 ```
 
-| Status | Severity | Meaning |
-|--------|----------|---------|
-| `auto_flagged` | >= 0.85 | Ready for review queue |
-| `needs_review` | 0.50-0.84 | Human should examine evidence |
-| `insufficient_evidence` | < 0.50 | Do not treat as a violation |
+| Status                    | Severity  | Meaning                       |
+| ------------------------- | --------- | ----------------------------- |
+| `auto_flagged`          | >= 0.85   | Ready for review queue        |
+| `needs_review`          | 0.50-0.84 | Human should examine evidence |
+| `insufficient_evidence` | < 0.50    | Do not treat as a violation   |
 
 ---
 
 ## Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `YOLO_MODEL_PATH` | `models/helmet_model.pt` | Helmet/no-helmet YOLO weights |
-| `PLATE_MODEL_PATH` | `models/ampr.pt` | Plate detector weights |
-| `YOLO_CONF_THRESHOLD` | `0.35` | Min confidence to keep a detection |
+| Variable                | Default                    | Description                        |
+| ----------------------- | -------------------------- | ---------------------------------- |
+| `YOLO_MODEL_PATH`     | `models/helmet_model.pt` | Helmet/no-helmet YOLO weights      |
+| `PLATE_MODEL_PATH`    | `models/ampr.pt`         | Plate detector weights             |
+| `YOLO_CONF_THRESHOLD` | `0.35`                   | Min confidence to keep a detection |

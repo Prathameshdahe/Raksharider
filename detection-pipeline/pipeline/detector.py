@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ── Model paths ───────────────────────────────────────────────────────────────
 
 COCO_MODEL_PATH:   str           = os.environ.get("COCO_MODEL_PATH",   "yolov8n.pt")
-HELMET_MODEL_PATH: str           = os.environ.get("YOLO_MODEL_PATH",   "models/helmet_model.pt")
+HELMET_MODEL_PATH: str           = os.environ.get("HELMET_MODEL_PATH", "models/helmet_model.pt")
 PLATE_MODEL_PATH:  Optional[str] = os.environ.get("PLATE_MODEL_PATH",  "models/ampr.pt")
 
 # Confidence threshold for all models
