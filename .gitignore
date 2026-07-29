@@ -1,8 +1,77 @@
-# Root-level gitignore
-*.tar.gz
-__pycache__/
-*.pyc
+# ── Secrets & credentials ─────────────────────────────────────────────────────
 .env
+.env.*
+*.env
+secrets.yaml
+secrets.json
+config/secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+*_rsa
+*_rsa.pub
+*_dsa
+*_dsa.pub
+*.token
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.tox/
+.mypy_cache/
+.dmypy.json
+.pytype/
+.ruff_cache/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
+env/
+ENV/
+
+# ── Testing & coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.cover
+nosetests.xml
+test-results/
+
+# ── IDE / editors ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ── Logs & temp ───────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# ── Archives (unless LFS-tracked) ─────────────────────────────────────────────
+*.tar.gz
+*.tar.bz2
+*.rar
+# Note: *.zip is tracked by Git LFS via .gitattributes — do not add here
