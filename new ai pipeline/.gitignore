@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# ─── Secrets — NEVER commit ─────────────────────────────────────────
+.env
+.env.local
+# Note: .env.example IS committed — it's a safe template with no real values
+*.key
+config/secrets.yaml
+
+# ─── Model weights ───────────────────────────────────────────────────
+# .pt files are tracked via Git LFS (.gitattributes).
+# They are committed as LFS pointers — NOT raw binaries.
+# *.pt.tmp files are never committed.
+*.pt.tmp
+
+# ─── YOLO training outputs ───────────────────────────────────────────
+runs/
+
+# ─── Dataset splits ──────────────────────────────────────────────────
+# Host on Roboflow/Drive. Only keep data.yaml + README in git.
+dataset/*/train/
+dataset/*/test/
+dataset/*/valid/
+
+# ─── Evidence / pipeline outputs ─────────────────────────────────────
+pipeline/evidence_output/
+
+# ─── Test videos ─────────────────────────────────────────────────────
+tests/sample_videos/*.mp4
+tests/sample_videos/*.mov
+# Allow one sample for CI reference:
+!tests/sample_videos/sample.mp4
+
+# ─── Docs folder (internal, not for repo) ───────────────────────────
+docs/
+
+# ─── EasyOCR cache ───────────────────────────────────────────────────
+.EasyOCR/
+*.cache/
+
+# ─── IDE / OS ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ─── Logs ────────────────────────────────────────────────────────────
+*.log
