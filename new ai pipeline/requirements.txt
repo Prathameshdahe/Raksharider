@@ -1,0 +1,24 @@
+# ── Core ML & computer vision ─────────────────────────────────────────────────
+opencv-python==4.10.0.84
+numpy==1.26.4
+ultralytics>=8.3.0             # YOLOv8/v11; 8.3+ removes torch<2.4 Windows pin
+easyocr==1.7.1                 # OCR; downloads language models on first run
+
+# ── API framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.1
+uvicorn[standard]==0.30.3     # ASGI server with websocket + reload support
+python-multipart==0.0.9       # required for FastAPI file upload (UploadFile)
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7        # async test support (for future async tests)
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+# torch and torchvision are pinned to the CUDA 12.8 build for RTX 3060.
+# Install with:
+#   pip install torch==2.11.0+cu128 torchvision==0.26.0+cu128 \
+#               --index-url https://download.pytorch.org/whl/cu128
+# WARNING: Do NOT run a plain `pip install -r requirements.txt` without the
+# CUDA index URL — PyPI will silently replace the CUDA build with a CPU-only one.
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128

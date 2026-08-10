@@ -8,13 +8,21 @@ env/
 *.egg-info/
 .pytest_cache/
 
-# Model weights -- excluded by default; override below for review builds
+# YOLO training outputs — never commit these
+runs/
+*.pt.tmp
+
+# Dataset splits — host on Roboflow/Drive; only keep data.yaml + README
+dataset/helmet_dataset/train/
+dataset/helmet_dataset/test/
+dataset/helmet_dataset/valid/
+
+# Model weights -- use Git LFS or provide download link
 models/*.pt
 models/*.onnx
-*.pt
 .EasyOCR/
-~/.cache/torch/
 *.cache/
+
 
 # Allow specific models for senior review
 !models/helmet_model.pt

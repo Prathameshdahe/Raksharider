@@ -1,4 +1,22 @@
-# ── Secrets & credentials ─────────────────────────────────────────────────────
+# ── Python / FastAPI Backend ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
+.env
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Secrets & credentials ──────────────────────────────────────────────────────
 .env
 .env.*
 *.env
@@ -11,67 +29,55 @@ config/secrets.*
 *.pfx
 *_rsa
 *_rsa.pub
-*_dsa
-*_dsa.pub
 *.token
 
-# ── Python ────────────────────────────────────────────────────────────────────
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
-.tox/
-.mypy_cache/
-.dmypy.json
-.pytype/
-.ruff_cache/
+# ── YOLO / ML outputs (never commit these) ─────────────────────────────────────
+runs/
+detection-pipeline/runs/
+*.pt.tmp
 
-# ── Virtual environments ───────────────────────────────────────────────────────
-.venv/
-venv/
-env/
-ENV/
+# ── Dataset splits (large; use Roboflow/Drive link instead) ───────────────────
+detection-pipeline/dataset/helmet_dataset/train/
+detection-pipeline/dataset/helmet_dataset/test/
+detection-pipeline/dataset/helmet_dataset/valid/
+# keep: data.yaml, README.dataset.txt, README.roboflow.txt
 
-# ── Testing & coverage ─────────────────────────────────────────────────────────
-.pytest_cache/
-.coverage
-coverage.xml
-htmlcov/
-*.cover
-nosetests.xml
-test-results/
+# ── Dataset zip (host externally) ─────────────────────────────────────────────
+Motorcycle helmet.v1i.yolov8-obb.zip
+*.dataset.zip
 
-# ── IDE / editors ─────────────────────────────────────────────────────────────
-.vscode/
-.idea/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-*.swp
-*.swo
-*~
+# ── Android / Kotlin Frontend ──────────────────────────────────────────────────
+frontend/.gradle/
+frontend/.idea/
+frontend/build/
+frontend/app/build/
+frontend/local.properties
+frontend/.kotlin/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.dex
 
-# ── OS ────────────────────────────────────────────────────────────────────────
+# ── Firebase ───────────────────────────────────────────────────────────────────
+frontend/app/google-services.json
+
+# ── Node / Admin Portal ────────────────────────────────────────────────────────
+node_modules/
+.next/
+.env.local
+.env.production
+
+# ── OS & Editor ────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
-ehthumbs.db
-
-# ── Logs & temp ───────────────────────────────────────────────────────────────
+*.swp
+*.swo
+.vscode/settings.json
+.idea/
 *.log
 *.tmp
-*.temp
 *.bak
-*.orig
-
-# ── Archives (unless LFS-tracked) ─────────────────────────────────────────────
-*.tar.gz
-*.tar.bz2
-*.rar
-# Note: *.zip is tracked by Git LFS via .gitattributes — do not add here
