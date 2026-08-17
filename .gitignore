@@ -78,12 +78,15 @@ node_modules/
 
 # ── Docs & Internal ───────────────────────────────────────────────────────────
 docs/
+AI-based-indian-license-plate-detection-master/
 
 # ── Evidence / Pipeline outputs ───────────────────────────────────────────────
 evidence_output/
 pipeline/evidence_output/
 new ai pipeline/pipeline/evidence_output/
 new ai pipeline/dataset/
+dataset/
+
 
 # ── OS & Editor ────────────────────────────────────────────────────────────────
 .DS_Store

@@ -234,11 +234,31 @@ def run(
                     "frame_consistency":   vr.frame_consistency_ratio,
                     "vehicle_type":        vr.vehicle_type,
                 }
+                old_status = vr.status
                 new_status, reasoning = vlm_tiebreaker(best_frame, summary, vr.status)
-                print(f"    VLM verdict: {vr.status} -> {new_status}")
+                print(f"    VLM verdict: {old_status} -> {new_status}")
                 print(f"    Reasoning  : {reasoning}")
                 vr.status         = new_status
                 vr.vlm_reasoning  = reasoning
+
+                if new_status != old_status:
+                    try:
+                        from pipeline.hard_case_miner import log_hard_case
+                        saved_case = log_hard_case(
+                            video_source=source,
+                            timestamp=best_ts or 0.0,
+                            frame_bgr=best_frame,
+                            rule_status=old_status,
+                            rule_violations=vr.violations_detected,
+                            vlm_verdict=new_status,
+                            vlm_reasoning=reasoning,
+                            trigger_reason="vlm_disagreement",
+                            extra_metadata=summary,
+                        )
+                        if saved_case:
+                            print(f"    Hard-case saved -> {saved_case}")
+                    except Exception as exc:
+                        logger.debug("Hard-case miner skipped: %s", exc)
     else:
         print("    Skipped (use --vlm to enable, fires only on needs_review)")
 
@@ -274,6 +294,23 @@ def run(
         print(f"    Saved: {fname}")
 
     report["evidence_frames"] = annotated_paths
+
+    # Render full annotated video (.mp4) for human review
+    video_out_path = output_dir / "evidence_video.mp4"
+    from pipeline.annotator import render_full_annotated_video
+    rendered = render_full_annotated_video(
+        frames=frames,
+        frame_detections=frame_detections,
+        track_results=track_results,
+        verification_result=vr,
+        number_plate=number_plate,
+        output_video_path=str(video_out_path),
+        fps=max(1.0, 1.0 / interval),
+    )
+    if rendered:
+        print(f"    Evidence vid : {video_out_path}")
+        report["evidence_video"] = str(video_out_path)
+
     report_path = output_dir / "report.json"
     report_path.write_text(report_to_json(report), encoding="utf-8")
     print(f"    JSON report  : {report_path}")

@@ -137,39 +137,68 @@ def apply_rules(
     vehicles_all = fd.by_classes("car", "bus", "truck", "mini_lcv", "auto_rickshaw",
                                  "bicycle", "motorcycle", "vehicle")
 
-    # ── Rider-motorcycle association ──────────────────────────────────────────
-    # Method 1: IoU overlap (side-by-side or front angle)
-    # Method 2: Proximity fallback — person centroid within expanded moto bbox
-    #           Handles rear/dashcam angle where person sits ON the motorcycle
-    riders: List[Detection] = []
-    for person in persons:
-        px_c = (person.bbox[0] + person.bbox[2]) / 2
-        py_c = (person.bbox[1] + person.bbox[3]) / 2
-        is_rider = False
-        for moto in motorcycles:
-            if _iou(person.bbox, moto.bbox) >= IOU_RIDER_MOTORCYCLE_THRESHOLD:
-                is_rider = True
-                break
-            # Proximity fallback: person centroid inside expanded moto bbox
-            mx1, my1, mx2, my2 = moto.bbox
-            mh = my2 - my1
-            expand = mh * RIDER_PROXIMITY_FRACTION
-            if (mx1 - expand < px_c < mx2 + expand and
-                    my1 - expand < py_c < my2 + expand):
-                is_rider = True
-                break
-        if is_rider:
-            riders.append(person)
+    # ── Rider-motorcycle association (Per-Motorcycle Spatial Containment) ─────
+    # A person is ONLY considered a rider if their lower body is physically seated
+    # within the saddle area of a specific motorcycle.
+    # Triple riding is evaluated PER MOTORCYCLE (not globally across the frame).
+    moto_to_riders: dict[int, List[Detection]] = {i: [] for i in range(len(motorcycles))}
+    all_assigned_riders: List[Detection] = []
 
-    rider_count = len(riders)
+    for person in persons:
+        px1, py1, px2, py2 = person.bbox
+        px_c = (px1 + px2) / 2.0
+        ph = py2 - py1
+        pw = px2 - px1
+
+        best_moto_idx: Optional[int] = None
+        best_overlap_score: float = 0.0
+
+        for m_idx, moto in enumerate(motorcycles):
+            mx1, my1, mx2, my2 = moto.bbox
+            mw = mx2 - mx1
+            mh = my2 - my1
+
+            # 1. Horizontal containment: person center must be within motorcycle width (+ 15% margin)
+            h_margin = mw * 0.15
+            if not (mx1 - h_margin <= px_c <= mx2 + h_margin):
+                continue
+
+            # 2. Vertical seating: person's bottom (feet/hips) must overlap with motorcycle body
+            # and person cannot be completely below or absurdly above
+            v_overlap = max(0.0, min(py2, my2) - max(py1, my1))
+            if v_overlap <= 0:
+                continue
+
+            # 3. Person's lower half should sit on/in the top 70% of motorcycle
+            if py2 < my1 or py1 > my2:
+                continue
+
+            # 4. Relative scale sanity check: rider height ~ 0.4x to 2.2x motorcycle height
+            if mh > 0 and not (0.35 <= ph / mh <= 2.2):
+                continue
+
+            overlap_score = v_overlap / max(1.0, ph)
+            if overlap_score > best_overlap_score:
+                best_overlap_score = overlap_score
+                best_moto_idx = m_idx
+
+        if best_moto_idx is not None:
+            moto_to_riders[best_moto_idx].append(person)
+            if person not in all_assigned_riders:
+                all_assigned_riders.append(person)
+
+    # Max riders on ANY SINGLE motorcycle in this frame
+    max_riders_on_single_moto = max((len(r) for r in moto_to_riders.values()), default=0)
+    rider_count = len(all_assigned_riders)
+
     logger.debug(
-        "Frame %.3fs: %d moto(s), %d person(s), %d rider(s)",
-        fd.timestamp, len(motorcycles), len(persons), rider_count,
+        "Frame %.3fs: %d moto(s), %d person(s), max_riders_single_moto=%d, total_riders=%d",
+        fd.timestamp, len(motorcycles), len(persons), max_riders_on_single_moto, rider_count,
     )
 
     # ── Helmet association ────────────────────────────────────────────────────
     helmet_calls: List[HelmetStatus] = []
-    for rider in riders:
+    for rider in all_assigned_riders:
         head = _head_box(rider.bbox)
         if any(_iou(head, h.bbox) >= IOU_HELMET_HEAD_THRESHOLD for h in helmets):
             call: HelmetStatus = "helmet"
@@ -189,7 +218,7 @@ def apply_rules(
     violations: List[str] = []
     if rider_count > 0 and helmet_status == "no_helmet":
         violations.append("no_helmet")
-    if rider_count >= TRIPLE_RIDING_THRESHOLD:
+    if max_riders_on_single_moto >= TRIPLE_RIDING_THRESHOLD:
         violations.append("triple_riding")
 
     # Phone usage
@@ -226,7 +255,7 @@ def apply_rules(
 
     # ── Confidence ────────────────────────────────────────────────────────────
     # Use relevant detections only; filter very low-conf to avoid dragging average down
-    used = [d for d in (riders + helmets + no_helmets + motorcycles)
+    used = [d for d in (all_assigned_riders + helmets + no_helmets + motorcycles)
             if d.confidence >= 0.35]
     avg_conf = sum(d.confidence for d in used) / len(used) if used else 0.0
 

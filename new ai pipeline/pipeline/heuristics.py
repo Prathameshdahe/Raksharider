@@ -41,9 +41,9 @@ logger = logging.getLogger(__name__)
 # Plate heuristics
 PLATE_OCR_MIN_CONFIDENCE: float = 0.30   # below this → plate "obscured"
 
-# Wheelie detection
-WHEELIE_ASPECT_RATIO_THRESHOLD: float = 1.6  # height/width ratio for wheelie pose
-WHEELIE_MIN_FRAMES: int = 2                  # must persist for N consecutive frames
+# Wheelie detection — real wheelies cause severe vertical aspect ratio spikes (>2.4)
+WHEELIE_ASPECT_RATIO_THRESHOLD: float = 2.4  # height/width ratio spike for true wheelie pose
+WHEELIE_MIN_FRAMES: int = 4                  # must persist for >= 4 consecutive frames (>= 2s at 0.5s interval)
 
 # Phone usage
 PHONE_PERSON_IOU_THRESHOLD: float = 0.05    # very loose — phone is small

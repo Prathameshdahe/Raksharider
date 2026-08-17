@@ -242,6 +242,23 @@ def aggregate_verdicts(
         )
         if new_status != status:
             logger.info("VLM changed status: %s → %s", status, new_status)
+            # ── Automatic Hard-Case Mining ────────────────────────────────────
+            try:
+                from pipeline.hard_case_miner import log_hard_case
+                peak_time = peak_fv.timestamp if (frame_verdicts and 'peak_fv' in locals()) else 0.0
+                log_hard_case(
+                    video_source=getattr(frame_verdicts[0], "video_source", "clip") if frame_verdicts else "clip",
+                    timestamp=peak_time,
+                    frame_bgr=peak_frame_bgr,
+                    rule_status=status,
+                    rule_violations=violations,
+                    vlm_verdict=new_status,
+                    vlm_reasoning=vlm_reasoning,
+                    trigger_reason="vlm_disagreement",
+                    extra_metadata=summary,
+                )
+            except Exception as miner_exc:
+                logger.debug("Hard-case miner logging skipped: %s", miner_exc)
             status = new_status
 
 
