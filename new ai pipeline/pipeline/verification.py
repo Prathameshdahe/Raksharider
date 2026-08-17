@@ -33,11 +33,17 @@ W_OCR:         float = 0.2
 assert abs(W_CONSISTENCY + W_YOLO_CONF + W_OCR - 1.0) < 1e-9
 
 TIER_AUTO_FLAGGED:    float = 0.85
-TIER_NEEDS_REVIEW:    float = 0.50
+TIER_NEEDS_REVIEW:    float = 0.40   # lowered so real violations with partial frames still trigger review
 CONSISTENCY_THRESHOLD: float = 0.70
 
 # Fraction of frames a heuristic violation must appear in to be "confirmed"
-HEURISTIC_CONSISTENCY_THRESHOLD: float = 0.30   # lower — heuristics are noisier
+# Applies to noisy signals: wheelie, phone, erratic driving
+HEURISTIC_CONSISTENCY_THRESHOLD: float = 0.05   # 5% of frames — catches even rare events
+
+# Minimum absolute number of frames for safety-critical violations.
+# Rationale: triple_riding + no_helmet are unambiguous — even 1 frame is sufficient
+# (vs. percentage thresholds that require 12+ frames in a 41-frame clip)
+MIN_SAFETY_FRAMES: int = 1
 
 StatusTier = Literal["auto_flagged", "needs_review", "insufficient_evidence"]
 
@@ -111,10 +117,14 @@ def aggregate_verdicts(
                 majority_helmet, helmet_consistency, confirmed_helmet)
 
     # ── Rider count ───────────────────────────────────────────────────────────
-    rider_counter = Counter(fv.rider_count for fv in frame_verdicts)
-    majority_riders, majority_riders_n = rider_counter.most_common(1)[0]
-    rider_consistency = majority_riders_n / total
-    confirmed_riders  = majority_riders if rider_consistency >= CONSISTENCY_THRESHOLD else 0
+    # Use MAX across all frames, not majority vote.
+    # Rationale: triple-riding or helmet violations happen in a subset of frames;
+    # requiring 70% consistency would filter out almost every real violation.
+    confirmed_riders = max(fv.rider_count for fv in frame_verdicts)
+
+    # For consistency ratio, still use the helmet majority (most reliable signal)
+    rider_frames_nonzero = sum(1 for fv in frame_verdicts if fv.rider_count > 0)
+    rider_consistency = rider_frames_nonzero / total if total else 0.0
 
     frame_consistency_ratio = max(helmet_consistency, rider_consistency)
 
@@ -145,10 +155,15 @@ def aggregate_verdicts(
 
     # ── Violations list ───────────────────────────────────────────────────────
     violations: List[str] = []
-    if confirmed_helmet == "no_helmet":
+
+    # no_helmet: fires if confirmed at clip level OR seen in MIN_SAFETY_FRAMES+ frames
+    no_helmet_frames = sum(1 for fv in frame_verdicts if "no_helmet" in fv.violations)
+    if confirmed_helmet == "no_helmet" or no_helmet_frames >= MIN_SAFETY_FRAMES:
         violations.append("no_helmet")
+
+    # triple_riding: fires on MIN_SAFETY_FRAMES — even 1 frame of 3 people on a bike counts
     triple_count = sum(1 for fv in frame_verdicts if "triple_riding" in fv.violations)
-    if triple_count / total >= CONSISTENCY_THRESHOLD:
+    if triple_count >= MIN_SAFETY_FRAMES:
         violations.append("triple_riding")
     if phone_confirmed:
         violations.append("phone_usage")
@@ -162,7 +177,10 @@ def aggregate_verdicts(
         violations.append("signal_violation")
 
     # ── Severity ──────────────────────────────────────────────────────────────
-    avg_yolo_confidence = sum(fv.avg_detection_confidence for fv in frame_verdicts) / total
+    # Exclude zero-confidence frames (no relevant detections that frame) from avg
+    conf_values = [fv.avg_detection_confidence for fv in frame_verdicts
+                   if fv.avg_detection_confidence > 0.0]
+    avg_yolo_confidence = sum(conf_values) / len(conf_values) if conf_values else 0.0
     severity_score = min(1.0, max(0.0,
         W_CONSISTENCY * frame_consistency_ratio
         + W_YOLO_CONF * avg_yolo_confidence
@@ -187,8 +205,27 @@ def aggregate_verdicts(
 
     # ── VLM tiebreaker ────────────────────────────────────────────────────────
     vlm_reasoning = ""
-    if vlm_enabled and status == "needs_review" and evidence_frames_bgr:
+    if vlm_enabled and status == "needs_review" and evidence_frames_bgr and evidence_timestamps:
         from pipeline.vlm import vlm_tiebreaker
+
+        # Pick the PEAK violation frame — highest rider count in the clip.
+        # Fallback to first evidence frame if timestamps don't align.
+        peak_frame_bgr = evidence_frames_bgr[0]
+        if frame_verdicts and len(evidence_timestamps) > 0:
+            peak_fv = max(frame_verdicts, key=lambda fv: fv.rider_count)
+            # Find the evidence frame whose timestamp is closest to the peak frame
+            if evidence_timestamps:
+                closest_idx = min(
+                    range(len(evidence_timestamps)),
+                    key=lambda i: abs(evidence_timestamps[i] - peak_fv.timestamp),
+                )
+                if closest_idx < len(evidence_frames_bgr):
+                    peak_frame_bgr = evidence_frames_bgr[closest_idx]
+                    logger.info(
+                        "VLM will use peak-violation frame at t=%.2fs (rider_count=%d)",
+                        peak_fv.timestamp, peak_fv.rider_count,
+                    )
+
         summary = {
             "violations_detected": violations,
             "helmet_status":       confirmed_helmet,
@@ -199,13 +236,14 @@ def aggregate_verdicts(
             "vehicle_type":        dominant_vehicle,
         }
         new_status, vlm_reasoning = vlm_tiebreaker(
-            evidence_frame_bgr=evidence_frames_bgr[0],
+            evidence_frame_bgr=peak_frame_bgr,
             structured_summary=summary,
             original_status=status,
         )
         if new_status != status:
             logger.info("VLM changed status: %s → %s", status, new_status)
             status = new_status
+
 
     return VerificationResult(
         status=status,

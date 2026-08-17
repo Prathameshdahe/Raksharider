@@ -41,10 +41,14 @@ logger = logging.getLogger(__name__)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
-IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.1
-IOU_HELMET_HEAD_THRESHOLD:      float = 0.15
-HEAD_FRACTION:                  float = 0.25
+IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.05   # IoU overlap (lowered — dashcam angle gives small overlap)
+IOU_HELMET_HEAD_THRESHOLD:      float = 0.10   # IoU for helmet-to-head overlap
+HEAD_FRACTION:                  float = 0.30   # top 30% of person bbox = head region
 TRIPLE_RIDING_THRESHOLD:        int   = 3
+
+# Proximity fallback: if person centroid is within this fraction of moto bbox height,
+# count them as a rider even when IoU is low (rear-camera / dashcam angle)
+RIDER_PROXIMITY_FRACTION: float = 1.5
 
 HelmetStatus = Literal["helmet", "no_helmet", "unclear"]
 
@@ -134,12 +138,28 @@ def apply_rules(
                                  "bicycle", "motorcycle", "vehicle")
 
     # ── Rider-motorcycle association ──────────────────────────────────────────
+    # Method 1: IoU overlap (side-by-side or front angle)
+    # Method 2: Proximity fallback — person centroid within expanded moto bbox
+    #           Handles rear/dashcam angle where person sits ON the motorcycle
     riders: List[Detection] = []
     for person in persons:
+        px_c = (person.bbox[0] + person.bbox[2]) / 2
+        py_c = (person.bbox[1] + person.bbox[3]) / 2
+        is_rider = False
         for moto in motorcycles:
             if _iou(person.bbox, moto.bbox) >= IOU_RIDER_MOTORCYCLE_THRESHOLD:
-                riders.append(person)
+                is_rider = True
                 break
+            # Proximity fallback: person centroid inside expanded moto bbox
+            mx1, my1, mx2, my2 = moto.bbox
+            mh = my2 - my1
+            expand = mh * RIDER_PROXIMITY_FRACTION
+            if (mx1 - expand < px_c < mx2 + expand and
+                    my1 - expand < py_c < my2 + expand):
+                is_rider = True
+                break
+        if is_rider:
+            riders.append(person)
 
     rider_count = len(riders)
     logger.debug(
@@ -205,7 +225,9 @@ def apply_rules(
         sig_state = signal_color(frame_bgr, signals)
 
     # ── Confidence ────────────────────────────────────────────────────────────
-    used = riders + helmets + motorcycles
+    # Use relevant detections only; filter very low-conf to avoid dragging average down
+    used = [d for d in (riders + helmets + no_helmets + motorcycles)
+            if d.confidence >= 0.35]
     avg_conf = sum(d.confidence for d in used) / len(used) if used else 0.0
 
     return FrameVerdict(

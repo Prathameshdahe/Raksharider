@@ -35,8 +35,15 @@ HELMET_MODEL_PATH:        str        = os.environ.get("HELMET_MODEL_PATH",      
 PLATE_MODEL_PATH:         str | None = os.environ.get("PLATE_MODEL_PATH",         "models/ampr.pt")
 VEHICLE_CLASS_MODEL_PATH: str | None = os.environ.get("VEHICLE_CLASS_MODEL_PATH", "models/classifiacation.pt")
 
-# Confidence threshold for all models
+# Global fallback confidence threshold
 DETECTION_CONF_THRESHOLD: float = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.35"))
+
+# Per-model confidence overrides
+# Lower threshold for person/motorcycle to catch riders at distance or in crowds
+COCO_CONF_THRESHOLD:   float = float(os.environ.get("COCO_CONF_THRESHOLD",   "0.20"))
+HELMET_CONF_THRESHOLD: float = float(os.environ.get("HELMET_CONF_THRESHOLD", "0.40"))
+PLATE_CONF_THRESHOLD:  float = float(os.environ.get("PLATE_CONF_THRESHOLD",  "0.30"))
+VEHICLE_CONF_THRESHOLD: float = float(os.environ.get("VEHICLE_CONF_THRESHOLD", "0.25"))
 
 # ── Class maps (raw model label → internal normalised label) ──────────────────
 
@@ -200,13 +207,17 @@ def detect_frame(frame_image: np.ndarray, timestamp: float = 0.0) -> FrameDetect
     fd  = FrameDetections(timestamp=timestamp)
 
     # 1. Person + motorcycle + broad vehicle classes from COCO
-    fd.detections.extend(_infer(_get_coco(), rgb, COCO_CLASSES))
+    #    Lower threshold so riders at distance / partial views are captured
+    fd.detections.extend(_infer(_get_coco(), rgb, COCO_CLASSES,
+                                conf_override=COCO_CONF_THRESHOLD))
 
-    # 2. Helmet / no-helmet
-    fd.detections.extend(_infer(_get_helmet(), rgb, HELMET_CLASSES))
+    # 2. Helmet / no-helmet (separate conf — stricter to reduce false positives)
+    fd.detections.extend(_infer(_get_helmet(), rgb, HELMET_CLASSES,
+                                conf_override=HELMET_CONF_THRESHOLD))
 
     # 3. License plate (ampr.pt wins over any plate from COCO)
-    plate_dets = _infer(_get_plate(), rgb, PLATE_CLASSES)
+    plate_dets = _infer(_get_plate(), rgb, PLATE_CLASSES,
+                        conf_override=PLATE_CONF_THRESHOLD)
     if plate_dets:
         fd.detections = [d for d in fd.detections if d.class_name != "license_plate"]
         fd.detections.extend(plate_dets)
@@ -214,10 +225,12 @@ def detect_frame(frame_image: np.ndarray, timestamp: float = 0.0) -> FrameDetect
     # 4. Fine-grained vehicle classification (classifiacation.pt)
     #    Lower confidence threshold — we want to catch even partial views.
     #    Only keep if the result is MORE specific than what COCO said.
-    vehicle_dets = _infer(_get_vehicle_class(), rgb, VEHICLE_CLASSES, conf_override=0.25)
+    vehicle_dets = _infer(_get_vehicle_class(), rgb, VEHICLE_CLASSES,
+                          conf_override=VEHICLE_CONF_THRESHOLD)
     if vehicle_dets:
-        # Remove COCO generic vehicle labels that this model now covers
-        generic_vehicle_classes = {"car", "bus", "truck", "vehicle"}
+        # Remove ONLY generic broad labels that classifiacation.pt also covers.
+        # KEEP motorcycle, person, bicycle — COCO is better at those.
+        generic_vehicle_classes = {"car", "bus", "truck", "vehicle", "mini_lcv"}
         fd.detections = [
             d for d in fd.detections if d.class_name not in generic_vehicle_classes
         ]

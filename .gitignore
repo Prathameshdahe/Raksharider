@@ -70,6 +70,21 @@ node_modules/
 .env.local
 .env.production
 
+# ── Media & Videos ─────────────────────────────────────────────────────────────
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ── Docs & Internal ───────────────────────────────────────────────────────────
+docs/
+
+# ── Evidence / Pipeline outputs ───────────────────────────────────────────────
+evidence_output/
+pipeline/evidence_output/
+new ai pipeline/pipeline/evidence_output/
+new ai pipeline/dataset/
+
 # ── OS & Editor ────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
@@ -81,3 +96,4 @@ desktop.ini
 *.log
 *.tmp
 *.bak
+

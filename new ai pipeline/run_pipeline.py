@@ -23,7 +23,7 @@ Stages (v2):
     4. Rule engine + heuristics rider count, helmet, phone, wheelie, erratic, signal
     5. OCR                      plate crop → EasyOCR → Indian format validator
     6. Aggregation              clip-level status + severity
-    7. VLM tiebreaker (--vlm)   Nemotron via NIM — fires only on needs_review
+    7. VLM tiebreaker (--vlm)   Gemini Vision — fires only on needs_review
     8. Report                   report.json + track_log.json + evidence JPEGs
 """
 
@@ -102,7 +102,7 @@ def run(
     print(f"  Interval     : {interval}s between sampled frames")
     print(f"  Vehicle type : {vehicle_type}")
     print(f"  Tracking     : {'enabled (ByteTrack)' if use_tracker else 'disabled'}")
-    print(f"  VLM          : {'enabled (Nemotron NIM)' if use_vlm else 'disabled'}")
+    print(f"  VLM          : {'enabled (Gemini Vision)' if use_vlm else 'disabled'}")
     print(f"  Output       : {output_dir}/")
 
     # ── Stage 1: Frame extraction ─────────────────────────────────────────────
@@ -213,7 +213,7 @@ def run(
     print(f"    Violations        : {vr.violations_detected or 'none'}")
 
     # ── Stage 7: VLM tiebreaker ───────────────────────────────────────────────
-    _stage(7, "VLM Tiebreaker" + (" (Nemotron NIM)" if use_vlm else " (skipped)"))
+    _stage(7, "VLM Tiebreaker" + (" (Gemini Vision)" if use_vlm else " (skipped)"))
     if use_vlm and vr.status == "needs_review":
         from pipeline.vlm import vlm_tiebreaker, check_vlm_available
         if not check_vlm_available():
@@ -336,7 +336,7 @@ def main():
     parser.add_argument("--track",         action="store_true",
                         help="Enable ByteTrack persistent vehicle ID assignment (recommended)")
     parser.add_argument("--vlm",           action="store_true",
-                        help="Enable VLM tiebreaker (Nemotron via NIM) on needs_review cases")
+                        help="Enable VLM tiebreaker (Gemini Vision, fallback: NVIDIA NIM) on needs_review cases")
     parser.add_argument("--vehicle-type",  type=str, default="two_wheeler",
                         choices=["two_wheeler", "four_wheeler"],
                         help="Declared vehicle type (affects front-cam detection routing)")
