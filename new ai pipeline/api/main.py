@@ -60,7 +60,7 @@ def root():
 @app.get("/health", tags=["Meta"])
 def health():
     """Liveness check."""
-    return {"status": "ok", "service": "raksharide-detection-pipeline", "version": "0.2.0"}
+    return {"status": "ok", "service": "raksharide-ai-pipeline", "version": "0.2.0"}
 
 
 @app.post("/analyze", tags=["Pipeline"])

@@ -33,13 +33,13 @@ config/secrets.*
 
 # ── YOLO / ML outputs (never commit these) ─────────────────────────────────────
 runs/
-detection-pipeline/runs/
+new ai pipeline/runs/
 *.pt.tmp
 
 # ── Dataset splits (large; use Roboflow/Drive link instead) ───────────────────
-detection-pipeline/dataset/helmet_dataset/train/
-detection-pipeline/dataset/helmet_dataset/test/
-detection-pipeline/dataset/helmet_dataset/valid/
+new ai pipeline/dataset/helmet_dataset/train/
+new ai pipeline/dataset/helmet_dataset/test/
+new ai pipeline/dataset/helmet_dataset/valid/
 # keep: data.yaml, README.dataset.txt, README.roboflow.txt
 
 # ── Dataset zip (host externally) ─────────────────────────────────────────────
@@ -78,7 +78,6 @@ node_modules/
 
 # ── Docs & Internal ───────────────────────────────────────────────────────────
 docs/
-AI-based-indian-license-plate-detection-master/
 
 # ── Evidence / Pipeline outputs ───────────────────────────────────────────────
 evidence_output/

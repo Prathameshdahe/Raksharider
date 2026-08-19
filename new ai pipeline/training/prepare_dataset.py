@@ -12,7 +12,7 @@ import yaml
 from pathlib import Path
 
 ZIP_PATH = Path(r"c:\Users\DELL\Desktop\RakshaRide\Motorcycle helmet.v1i.yolov8-obb.zip")
-DATASET_DIR = Path(r"c:\Users\DELL\Desktop\RakshaRide\detection-pipeline\dataset\helmet_dataset")
+DATASET_DIR = Path(r"c:\Users\DELL\Desktop\RakshaRide\new ai pipeline\dataset\helmet_dataset")
 
 
 def convert_obb_line_to_standard(line: str) -> str:
