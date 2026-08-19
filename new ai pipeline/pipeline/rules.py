@@ -50,6 +50,28 @@ TRIPLE_RIDING_THRESHOLD:        int   = 3
 # count them as a rider even when IoU is low (rear-camera / dashcam angle)
 RIDER_PROXIMITY_FRACTION: float = 1.5
 
+# ── Vehicle class taxonomy ───────────────────────────────────────────────────
+# Checks that are ONLY valid for two-wheelers:
+#   helmet, triple-riding, wheelie
+# Checks that apply to ALL vehicle classes:
+#   plate/OCR, phone usage, erratic driving, signal violation
+
+TWO_WHEELER_CLASSES: frozenset = frozenset({"motorcycle", "bicycle"})
+FOUR_WHEELER_CLASSES: frozenset = frozenset({
+    "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle",
+})
+
+
+def is_two_wheeler(class_name: str) -> bool:
+    """True iff class_name is a two-wheeler (motorcycle/bicycle)."""
+    return class_name.lower() in TWO_WHEELER_CLASSES
+
+
+def is_four_wheeler(class_name: str) -> bool:
+    """True iff class_name is a four-wheeler (car/bus/truck/etc)."""
+    return class_name.lower() in FOUR_WHEELER_CLASSES
+
+
 HelmetStatus = Literal["helmet", "no_helmet", "unclear"]
 
 
@@ -93,10 +115,15 @@ def _head_box(person_bbox: List[float]) -> List[float]:
 
 
 def _dominant_vehicle_class(fd: FrameDetections) -> str:
-    """Pick the most-specific vehicle class present in this frame."""
+    """
+    Pick the most-specific vehicle class present in this frame.
+    Motorcycle beats car — violations like triple-riding are two-wheeler-specific,
+    so when both appear in a frame the motorcycle is the primary subject.
+    """
     priority = [
-        "bus", "truck", "mini_lcv", "car", "auto_rickshaw",
-        "bicycle", "motorcycle", "vehicle",
+        "motorcycle", "bicycle",          # two-wheelers first
+        "bus", "truck", "mini_lcv",
+        "car", "auto_rickshaw", "vehicle",
     ]
     present = {d.class_name for d in fd.detections}
     for cls in priority:
@@ -137,68 +164,71 @@ def apply_rules(
     vehicles_all = fd.by_classes("car", "bus", "truck", "mini_lcv", "auto_rickshaw",
                                  "bicycle", "motorcycle", "vehicle")
 
-    # ── Rider-motorcycle association (Per-Motorcycle Spatial Containment) ─────
-    # A person is ONLY considered a rider if their lower body is physically seated
-    # within the saddle area of a specific motorcycle.
-    # Triple riding is evaluated PER MOTORCYCLE (not globally across the frame).
+    # ── Rider-motorcycle association (Two-wheeler guard) ──────────────────────
+    # GUARD: helmet, triple-riding, and rider association are ONLY valid for
+    # two-wheelers. If no motorcycle is detected in this frame, skip the entire
+    # block. Returning None/empty is semantically "not applicable", not "compliant".
     moto_to_riders: dict[int, List[Detection]] = {i: [] for i in range(len(motorcycles))}
     all_assigned_riders: List[Detection] = []
+    max_riders_on_single_moto = 0
+    rider_count = 0
 
-    for person in persons:
-        px1, py1, px2, py2 = person.bbox
-        px_c = (px1 + px2) / 2.0
-        ph = py2 - py1
-        pw = px2 - px1
+    if motorcycles:  # ← guard: only evaluate rider/helmet on frames with motorcycles
+        for person in persons:
+            px1, py1, px2, py2 = person.bbox
+            px_c = (px1 + px2) / 2.0
+            ph = py2 - py1
 
-        best_moto_idx: Optional[int] = None
-        best_overlap_score: float = 0.0
+            best_moto_idx: Optional[int] = None
+            best_overlap_score: float = 0.0
 
-        for m_idx, moto in enumerate(motorcycles):
-            mx1, my1, mx2, my2 = moto.bbox
-            mw = mx2 - mx1
-            mh = my2 - my1
+            for m_idx, moto in enumerate(motorcycles):
+                mx1, my1, mx2, my2 = moto.bbox
+                mw = mx2 - mx1
+                mh = my2 - my1
 
-            # 1. Horizontal containment: person center must be within motorcycle width (+ 15% margin)
-            h_margin = mw * 0.15
-            if not (mx1 - h_margin <= px_c <= mx2 + h_margin):
-                continue
+                # 1. Horizontal containment: person center within motorcycle width (+15% margin)
+                h_margin = mw * 0.15
+                if not (mx1 - h_margin <= px_c <= mx2 + h_margin):
+                    continue
 
-            # 2. Vertical seating: person's bottom (feet/hips) must overlap with motorcycle body
-            # and person cannot be completely below or absurdly above
-            v_overlap = max(0.0, min(py2, my2) - max(py1, my1))
-            if v_overlap <= 0:
-                continue
+                # 2. Vertical seating: person's bottom must overlap motorcycle body
+                v_overlap = max(0.0, min(py2, my2) - max(py1, my1))
+                if v_overlap <= 0:
+                    continue
 
-            # 3. Person's lower half should sit on/in the top 70% of motorcycle
-            if py2 < my1 or py1 > my2:
-                continue
+                # 3. Person cannot be completely below or absurdly above motorcycle
+                if py2 < my1 or py1 > my2:
+                    continue
 
-            # 4. Relative scale sanity check: rider height ~ 0.4x to 2.2x motorcycle height
-            if mh > 0 and not (0.35 <= ph / mh <= 2.2):
-                continue
+                # 4. Relative scale sanity: rider height ~ 0.35x–2.2x motorcycle height
+                if mh > 0 and not (0.35 <= ph / mh <= 2.2):
+                    continue
 
-            overlap_score = v_overlap / max(1.0, ph)
-            if overlap_score > best_overlap_score:
-                best_overlap_score = overlap_score
-                best_moto_idx = m_idx
+                overlap_score = v_overlap / max(1.0, ph)
+                if overlap_score > best_overlap_score:
+                    best_overlap_score = overlap_score
+                    best_moto_idx = m_idx
 
-        if best_moto_idx is not None:
-            moto_to_riders[best_moto_idx].append(person)
-            if person not in all_assigned_riders:
-                all_assigned_riders.append(person)
+            if best_moto_idx is not None:
+                moto_to_riders[best_moto_idx].append(person)
+                if person not in all_assigned_riders:
+                    all_assigned_riders.append(person)
 
-    # Max riders on ANY SINGLE motorcycle in this frame
-    max_riders_on_single_moto = max((len(r) for r in moto_to_riders.values()), default=0)
-    rider_count = len(all_assigned_riders)
+        # Max riders on ANY SINGLE motorcycle in this frame
+        max_riders_on_single_moto = max(
+            (len(r) for r in moto_to_riders.values()), default=0
+        )
+        rider_count = len(all_assigned_riders)
 
     logger.debug(
         "Frame %.3fs: %d moto(s), %d person(s), max_riders_single_moto=%d, total_riders=%d",
         fd.timestamp, len(motorcycles), len(persons), max_riders_on_single_moto, rider_count,
     )
 
-    # ── Helmet association ────────────────────────────────────────────────────
+    # ── Helmet association (two-wheeler only, via guard above) ────────────────
     helmet_calls: List[HelmetStatus] = []
-    for rider in all_assigned_riders:
+    for rider in all_assigned_riders:  # empty list if no motorcycles → skipped entirely
         head = _head_box(rider.bbox)
         if any(_iou(head, h.bbox) >= IOU_HELMET_HEAD_THRESHOLD for h in helmets):
             call: HelmetStatus = "helmet"
@@ -209,6 +239,7 @@ def apply_rules(
         helmet_calls.append(call)
 
     if not helmet_calls:
+        # No motorcycles in frame → helmet is not applicable ("unclear" = not evaluated)
         helmet_status: HelmetStatus = "unclear"
     else:
         counts = {s: helmet_calls.count(s) for s in ("helmet", "no_helmet", "unclear")}
@@ -216,19 +247,22 @@ def apply_rules(
 
     # ── Violations ────────────────────────────────────────────────────────────
     violations: List[str] = []
-    if rider_count > 0 and helmet_status == "no_helmet":
-        violations.append("no_helmet")
-    if max_riders_on_single_moto >= TRIPLE_RIDING_THRESHOLD:
-        violations.append("triple_riding")
+
+    # Helmet + triple-riding: ONLY fire when motorcycles present (guarded above)
+    if motorcycles:
+        if rider_count > 0 and helmet_status == "no_helmet":
+            violations.append("no_helmet")
+        if max_riders_on_single_moto >= TRIPLE_RIDING_THRESHOLD:
+            violations.append("triple_riding")
 
     # Phone usage
     phone = phone_usage_detected(persons, phones)
     if phone:
         violations.append("phone_usage")
 
-    # Wheelie
+    # Wheelie: two-wheeler only
     wheelie = False
-    if wheelie_detector is not None:
+    if motorcycles and wheelie_detector is not None:
         wheelie = wheelie_detector.update(motorcycles)
         if wheelie:
             violations.append("wheelie")
