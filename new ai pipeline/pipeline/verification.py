@@ -128,8 +128,13 @@ def aggregate_verdicts(
 
     frame_consistency_ratio = max(helmet_consistency, rider_consistency)
 
-    # ── Vehicle type majority vote ────────────────────────────────────────────
-    vehicle_counter = Counter(fv.vehicle_type for fv in frame_verdicts)
+    # ── Vehicle type — violation-aware majority vote ──────────────────────────
+    # Prioritise frames where a rider or violation was seen — those frames contain
+    # the actual subject vehicle. Background cars/trucks in non-violation frames
+    # must not shadow the motorcycle that actually tripped the rules.
+    violation_frames = [fv for fv in frame_verdicts if fv.rider_count > 0 or fv.violations]
+    vote_pool = violation_frames if violation_frames else frame_verdicts
+    vehicle_counter = Counter(fv.vehicle_type for fv in vote_pool)
     dominant_vehicle = vehicle_counter.most_common(1)[0][0]
 
     # ── Heuristic violations (lower consistency threshold) ────────────────────
