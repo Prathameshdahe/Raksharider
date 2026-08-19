@@ -218,3 +218,50 @@ def draw_verdict_overlay(
         y += line_gap
 
     return out
+
+
+def render_full_annotated_video(
+    frames: list,
+    frame_detections: list,
+    track_results: dict,
+    verification_result: VerificationResult,
+    number_plate: Optional[str] = None,
+    output_video_path: str = "evidence_video.mp4",
+    fps: float = 2.0,
+) -> Optional[str]:
+    """
+    Render all sampled frames with bounding boxes, track IDs, and HUD overlays
+    into a playable annotated MP4 video file.
+    """
+    if not frames:
+        return None
+
+    first_frame = frames[0].image
+    h, w = first_frame.shape[:2]
+
+    # Try MP4V codec
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (w, h))
+
+    if not out.isOpened():
+        # Fallback to AVI / XVID if MP4 fails
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (w, h))
+
+    if not out.isOpened():
+        return None
+
+    total = len(frames)
+    for i, frame in enumerate(frames):
+        fd = frame_detections[i]
+        if frame.timestamp in track_results:
+            annotated = draw_tracked_detections(frame.image, track_results[frame.timestamp], number_plate)
+        else:
+            annotated = draw_detections(frame.image, fd.detections, number_plate)
+
+        annotated = draw_verdict_overlay(annotated, verification_result, number_plate, i + 1, total)
+        out.write(annotated)
+
+    out.release()
+    return output_video_path
+

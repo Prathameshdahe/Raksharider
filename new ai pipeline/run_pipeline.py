@@ -61,6 +61,7 @@ from pipeline.frame_extractor import extract_frames
 from pipeline.detector        import detect_frames
 from pipeline.rules           import apply_rules_to_all
 from pipeline.ocr             import read_plate, majority_vote_plate
+from pipeline.plate_aggregator import PlateAggregator, find_nearest_track_id
 from pipeline.verification    import aggregate_verdicts
 from pipeline.report          import build_report, report_to_json
 from pipeline.annotator       import draw_detections, draw_verdict_overlay, draw_tracked_detections
@@ -179,23 +180,105 @@ def run(
     if wheelie_frames: print(f"      Wheelie:     {wheelie_frames}/{len(frames)} frames")
     if erratic_frames: print(f"      Erratic:     {erratic_frames}/{len(frames)} frames")
 
-    # ── Stage 5: OCR ─────────────────────────────────────────────────────────
-    _stage(5, "License Plate OCR (ampr.pt -> EasyOCR)")
-    plate_reads = []
+    # ── Stage 5: OCR (3-tier track-keyed aggregation) ────────────────────────
+    _stage(5, "License Plate OCR (ampr.pt -> EasyOCR -> PaddleOCR -> Gemini VLM)")
+    aggregator = PlateAggregator()
+
     for i, fd in enumerate(frame_detections):
         plates = fd.by_class("license_plate")
         if not plates:
             continue
-        best = max(plates, key=lambda d: d.confidence)
-        read = read_plate(frames[i].image, best.bbox, fd.timestamp)
-        if read:
-            plate_reads.append(read)
-            status_lbl = "valid" if read.is_valid_format else "invalid format"
-            print(f"      t={fd.timestamp:.2f}s -> '{read.raw_text}' [{status_lbl}]")
+        # Take highest-confidence plate detection in this frame
+        best_plate = max(plates, key=lambda d: d.confidence)
+        # Find which tracked vehicle this plate belongs to
+        tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
+        track_id = find_nearest_track_id(best_plate.bbox, tracked_in_frame) or -1
+        raw = aggregator.add_raw_read(
+            track_id=track_id,
+            frame_bgr=frames[i].image,
+            plate_bbox=best_plate.bbox,
+            timestamp=fd.timestamp,
+            frame_index=i,
+        )
+        if raw:
+            status_lbl = "valid" if raw.is_valid else "invalid format"
+            print(f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] -> '{raw.text}' [{status_lbl}]")
 
-    number_plate, ocr_agreement = majority_vote_plate(plate_reads)
-    print(f"    Final plate: {number_plate or '<unreadable>'}  "
-          f"(agreement {ocr_agreement:.0%} across {len(plate_reads)} reads)")
+    # Tier 2 escalation: run PaddleOCR on tracks that never got a valid EasyOCR read
+    for tid in aggregator.track_ids():
+        if not aggregator.has_valid_reads(tid):
+            # Find the best plate frame for this track
+            best_i, best_plate_det = None, None
+            for i, fd in enumerate(frame_detections):
+                plates = fd.by_class("license_plate")
+                if not plates:
+                    continue
+                tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
+                matched_tid = find_nearest_track_id(
+                    max(plates, key=lambda d: d.confidence).bbox, tracked_in_frame
+                )
+                if matched_tid == tid:
+                    best_i = i
+                    best_plate_det = max(plates, key=lambda d: d.confidence)
+            if best_i is not None and best_plate_det is not None:
+                paddle_raw = aggregator.escalate_to_paddle(
+                    track_id=tid,
+                    frame_bgr=frames[best_i].image,
+                    plate_bbox=best_plate_det.bbox,
+                    timestamp=frames[best_i].timestamp,
+                    frame_index=best_i,
+                )
+                if paddle_raw:
+                    status_lbl = "valid" if paddle_raw.is_valid else "invalid format"
+                    print(f"      [PaddleOCR track {tid}] -> '{paddle_raw.text}' [{status_lbl}]")
+
+    # Tier 3 escalation: VLM plate reading for tracks still unresolved after Tier 1+2
+    for tid in aggregator.track_ids():
+        if not aggregator.has_valid_reads(tid):
+            # Only worth the VLM call if we had multiple plate detections (genuinely detected)
+            num_plate_frames = sum(
+                1 for fd in frame_detections
+                if fd.by_class("license_plate") and
+                find_nearest_track_id(
+                    max(fd.by_class("license_plate"), key=lambda d: d.confidence).bbox,
+                    track_results.get(fd.timestamp, []) if use_tracker else [],
+                ) == tid
+            )
+            if num_plate_frames >= 2:
+                for i, fd in enumerate(frame_detections):
+                    plates = fd.by_class("license_plate")
+                    if not plates:
+                        continue
+                    tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
+                    if find_nearest_track_id(
+                        max(plates, key=lambda d: d.confidence).bbox, tracked_in_frame
+                    ) == tid:
+                        vlm_raw = aggregator.escalate_to_vlm(
+                            track_id=tid,
+                            frame_bgr=frames[i].image,
+                            plate_bbox=max(plates, key=lambda d: d.confidence).bbox,
+                            timestamp=fd.timestamp,
+                            frame_index=i,
+                        )
+                        if vlm_raw:
+                            status_lbl = "valid" if vlm_raw.is_valid else "invalid format"
+                            print(f"      [VLM Plate track {tid}] -> '{vlm_raw.text}' [{status_lbl}]")
+                        break  # One VLM call per track is enough
+
+    # Final resolution: pick best plate across all tracks
+    resolutions = aggregator.resolve_all()
+    best_resolution = aggregator.best_result(resolutions)
+    if best_resolution:
+        number_plate   = best_resolution.plate_text
+        ocr_agreement  = best_resolution.agreement
+        print(f"    Final plate: {number_plate or '<unreadable>'}  "
+              f"(agreement {ocr_agreement:.0%}, tier={best_resolution.winning_tier}, "
+              f"valid_reads={best_resolution.valid_reads}/{best_resolution.total_reads})")
+    else:
+        number_plate  = None
+        ocr_agreement = 0.0
+        print("    Final plate: <unreadable> (no detections)")
+
 
     # ── Stage 6: Aggregation ──────────────────────────────────────────────────
     _stage(6, "Aggregation & Severity Scoring")
@@ -234,11 +317,31 @@ def run(
                     "frame_consistency":   vr.frame_consistency_ratio,
                     "vehicle_type":        vr.vehicle_type,
                 }
+                old_status = vr.status
                 new_status, reasoning = vlm_tiebreaker(best_frame, summary, vr.status)
-                print(f"    VLM verdict: {vr.status} -> {new_status}")
+                print(f"    VLM verdict: {old_status} -> {new_status}")
                 print(f"    Reasoning  : {reasoning}")
                 vr.status         = new_status
                 vr.vlm_reasoning  = reasoning
+
+                if new_status != old_status:
+                    try:
+                        from pipeline.hard_case_miner import log_hard_case
+                        saved_case = log_hard_case(
+                            video_source=source,
+                            timestamp=best_ts or 0.0,
+                            frame_bgr=best_frame,
+                            rule_status=old_status,
+                            rule_violations=vr.violations_detected,
+                            vlm_verdict=new_status,
+                            vlm_reasoning=reasoning,
+                            trigger_reason="vlm_disagreement",
+                            extra_metadata=summary,
+                        )
+                        if saved_case:
+                            print(f"    Hard-case saved -> {saved_case}")
+                    except Exception as exc:
+                        logger.debug("Hard-case miner skipped: %s", exc)
     else:
         print("    Skipped (use --vlm to enable, fires only on needs_review)")
 
@@ -274,6 +377,23 @@ def run(
         print(f"    Saved: {fname}")
 
     report["evidence_frames"] = annotated_paths
+
+    # Render full annotated video (.mp4) for human review
+    video_out_path = output_dir / "evidence_video.mp4"
+    from pipeline.annotator import render_full_annotated_video
+    rendered = render_full_annotated_video(
+        frames=frames,
+        frame_detections=frame_detections,
+        track_results=track_results,
+        verification_result=vr,
+        number_plate=number_plate,
+        output_video_path=str(video_out_path),
+        fps=max(1.0, 1.0 / interval),
+    )
+    if rendered:
+        print(f"    Evidence vid : {video_out_path}")
+        report["evidence_video"] = str(video_out_path)
+
     report_path = output_dir / "report.json"
     report_path.write_text(report_to_json(report), encoding="utf-8")
     print(f"    JSON report  : {report_path}")

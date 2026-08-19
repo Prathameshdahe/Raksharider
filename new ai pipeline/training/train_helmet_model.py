@@ -12,8 +12,8 @@ import torch
 import sys
 import shutil
 
-DATA_YAML = Path(r"c:\Users\DELL\Desktop\RakshaRide\detection-pipeline\dataset\helmet_dataset\data.yaml")
-MODELS_DIR = Path(r"c:\Users\DELL\Desktop\RakshaRide\detection-pipeline\models")
+DATA_YAML = Path(r"c:\Users\DELL\Desktop\RakshaRide\new ai pipeline\dataset\helmet_dataset\data.yaml")
+MODELS_DIR = Path(r"c:\Users\DELL\Desktop\RakshaRide\new ai pipeline\models")
 
 
 def main():

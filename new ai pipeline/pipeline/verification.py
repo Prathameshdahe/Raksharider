@@ -128,9 +128,23 @@ def aggregate_verdicts(
 
     frame_consistency_ratio = max(helmet_consistency, rider_consistency)
 
-    # ── Vehicle type majority vote ────────────────────────────────────────────
-    vehicle_counter = Counter(fv.vehicle_type for fv in frame_verdicts)
-    dominant_vehicle = vehicle_counter.most_common(1)[0][0]
+    # ── Vehicle type — subject-first resolution ───────────────────────────────
+    # Priority (highest wins):
+    #   1. "motorcycle" if ANY frame saw rider_count > 0 AND vehicle_type == motorcycle
+    #      → the motorcycle WAS the subject, regardless of background car/truck count
+    #   2. Majority vote among violation frames (rider_count > 0 or violations fired)
+    #   3. Majority vote across all frames (fallback)
+    moto_rider_frames = [
+        fv for fv in frame_verdicts
+        if fv.rider_count > 0 and fv.vehicle_type == "motorcycle"
+    ]
+    if moto_rider_frames:
+        dominant_vehicle = "motorcycle"
+    else:
+        violation_frames = [fv for fv in frame_verdicts if fv.rider_count > 0 or fv.violations]
+        vote_pool = violation_frames if violation_frames else frame_verdicts
+        vehicle_counter = Counter(fv.vehicle_type for fv in vote_pool)
+        dominant_vehicle = vehicle_counter.most_common(1)[0][0]
 
     # ── Heuristic violations (lower consistency threshold) ────────────────────
     phone_frames    = sum(1 for fv in frame_verdicts if fv.phone_usage)
@@ -242,6 +256,23 @@ def aggregate_verdicts(
         )
         if new_status != status:
             logger.info("VLM changed status: %s → %s", status, new_status)
+            # ── Automatic Hard-Case Mining ────────────────────────────────────
+            try:
+                from pipeline.hard_case_miner import log_hard_case
+                peak_time = peak_fv.timestamp if (frame_verdicts and 'peak_fv' in locals()) else 0.0
+                log_hard_case(
+                    video_source=getattr(frame_verdicts[0], "video_source", "clip") if frame_verdicts else "clip",
+                    timestamp=peak_time,
+                    frame_bgr=peak_frame_bgr,
+                    rule_status=status,
+                    rule_violations=violations,
+                    vlm_verdict=new_status,
+                    vlm_reasoning=vlm_reasoning,
+                    trigger_reason="vlm_disagreement",
+                    extra_metadata=summary,
+                )
+            except Exception as miner_exc:
+                logger.debug("Hard-case miner logging skipped: %s", miner_exc)
             status = new_status
 
 
