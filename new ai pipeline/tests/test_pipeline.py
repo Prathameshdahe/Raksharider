@@ -219,10 +219,10 @@ class TestEdgeCases:
         assert verdict.avg_detection_confidence == 0.0
 
     def test_motorcycle_only_no_persons(self):
-        """Motorcycle detected but no persons → 0 riders."""
+        """Motorcycle detected but no persons → 0 riders, plate still checked."""
         fd = make_fd(0.0, [
             make_detection("motorcycle", [50, 50, 250, 200]),
         ])
         verdict = apply_rules(fd)
         assert verdict.rider_count == 0
-        assert verdict.violations == []
+        assert verdict.violations == ["missing_plate"]

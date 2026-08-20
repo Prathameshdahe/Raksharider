@@ -188,21 +188,19 @@ def run(
         plates = fd.by_class("license_plate")
         if not plates:
             continue
-        # Take highest-confidence plate detection in this frame
-        best_plate = max(plates, key=lambda d: d.confidence)
-        # Find which tracked vehicle this plate belongs to
         tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
-        track_id = find_nearest_track_id(best_plate.bbox, tracked_in_frame) or -1
-        raw = aggregator.add_raw_read(
-            track_id=track_id,
-            frame_bgr=frames[i].image,
-            plate_bbox=best_plate.bbox,
-            timestamp=fd.timestamp,
-            frame_index=i,
-        )
-        if raw:
-            status_lbl = "valid" if raw.is_valid else "invalid format"
-            print(f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] -> '{raw.text}' [{status_lbl}]")
+        for plate in sorted(plates, key=lambda d: d.confidence, reverse=True):
+            track_id = find_nearest_track_id(plate.bbox, tracked_in_frame) or -1
+            raw = aggregator.add_raw_read(
+                track_id=track_id,
+                frame_bgr=frames[i].image,
+                plate_bbox=plate.bbox,
+                timestamp=fd.timestamp,
+                frame_index=i,
+            )
+            if raw:
+                status_lbl = "valid" if raw.is_valid else "invalid format"
+                print(f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] -> '{raw.text}' [{status_lbl}]")
 
     # Tier 2 escalation: run PaddleOCR on tracks that never got a valid EasyOCR read
     for tid in aggregator.track_ids():
@@ -267,6 +265,11 @@ def run(
 
     # Final resolution: pick best plate across all tracks
     resolutions = aggregator.resolve_all()
+    plate_by_track = {
+        tid: res.plate_text
+        for tid, res in resolutions.items()
+        if tid >= 0 and res.plate_text and res.is_validated
+    }
     best_resolution = aggregator.best_result(resolutions)
     if best_resolution:
         number_plate   = best_resolution.plate_text
@@ -278,6 +281,29 @@ def run(
         number_plate  = None
         ocr_agreement = 0.0
         print("    Final plate: <unreadable> (no detections)")
+
+    vehicle_classes = {"motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle"}
+    vehicle_track_labels: dict[int, str] = {}
+    for tracked in track_results.values():
+        for det in tracked:
+            if det.track_id >= 0 and det.class_name in vehicle_classes:
+                prev = vehicle_track_labels.get(det.track_id)
+                if prev is None or det.class_name != "vehicle":
+                    vehicle_track_labels[det.track_id] = det.class_name
+
+    vehicle_plate_lines = [
+        f"ID:{tid} {cls.replace('_', ' ')} plate: {plate_by_track.get(tid, 'unreadable')}"
+        for tid, cls in sorted(vehicle_track_labels.items())
+    ]
+    vehicles_detected = [
+        {
+            "track_id": tid,
+            "class": cls,
+            "plate": plate_by_track.get(tid),
+            "plate_status": "read" if tid in plate_by_track else "unreadable",
+        }
+        for tid, cls in sorted(vehicle_track_labels.items())
+    ]
 
 
     # ── Stage 6: Aggregation ──────────────────────────────────────────────────
@@ -358,6 +384,7 @@ def run(
         vehicle_type_declared=vehicle_type,
         run_id=output_dir.name,
         track_history=track_history or None,
+        vehicles_detected=vehicles_detected,
     )
 
     # Save annotated evidence frames
@@ -367,10 +394,22 @@ def run(
             continue
         fd = frame_detections[i]
         if use_tracker and frame.timestamp in track_results:
-            img = draw_tracked_detections(frame.image, track_results[frame.timestamp], number_plate)
+            img = draw_tracked_detections(
+                frame.image,
+                track_results[frame.timestamp],
+                number_plate,
+                plate_by_track=plate_by_track,
+            )
         else:
             img = draw_detections(frame.image, fd.detections, number_plate)
-        img = draw_verdict_overlay(img, vr, number_plate, i + 1, len(frames))
+        img = draw_verdict_overlay(
+            img,
+            vr,
+            number_plate,
+            i + 1,
+            len(frames),
+            vehicle_plate_lines=vehicle_plate_lines,
+        )
         fname = output_dir / f"evidence_t{frame.timestamp:.3f}s.jpg"
         cv2.imwrite(str(fname), img)
         annotated_paths.append(str(fname))
@@ -387,6 +426,8 @@ def run(
         track_results=track_results,
         verification_result=vr,
         number_plate=number_plate,
+        plate_by_track=plate_by_track,
+        vehicle_plate_lines=vehicle_plate_lines,
         output_video_path=str(video_out_path),
         fps=max(1.0, 1.0 / interval),
     )

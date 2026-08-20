@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 from pipeline.detector import Detection, FrameDetections
 from pipeline.verification import VerificationResult
@@ -29,6 +29,10 @@ COLOURS = {
     "car":             (180, 100, 255),   # purple
     "bus":             (255, 200,  50),   # cyan-ish
     "truck":           (200, 150, 100),   # brown
+    "mini_lcv":        (200, 180, 100),
+    "auto_rickshaw":   (80,  220, 220),
+    "bicycle":         (255, 180,  80),
+    "vehicle":         (180, 180, 180),
     "traffic_light":   (0,   255, 255),   # yellow
     "cell_phone":      (0,   100, 255),   # orange-red
 }
@@ -36,6 +40,10 @@ DEFAULT_COLOUR = (180, 180, 180)
 
 # Minimum confidence to draw a helmet/no_helmet box at all
 HELMET_DRAW_MIN_CONF: float = 0.55
+VEHICLE_CLASSES = {
+    "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
+    "auto_rickshaw", "vehicle",
+}
 
 
 def _iou_any(box: list, others: list) -> float:
@@ -73,6 +81,16 @@ def _should_draw_helmet(det: Detection, person_boxes: list) -> bool:
     if not person_boxes:
         return False
     return _iou_any(det.bbox, person_boxes) > 0.0
+
+
+def _plate_for_track(track_id: int, plates) -> Optional[str]:
+    if track_id < 0 or plates is None:
+        return None
+    if isinstance(plates, Mapping):
+        return plates.get(track_id)
+    if isinstance(plates, str):
+        return plates
+    return None
 
 
 def draw_detections(
@@ -121,6 +139,7 @@ def draw_tracked_detections(
     image: np.ndarray,
     tracked_dets,                    # list[TrackedDetection] from tracker.py
     ocr_plate: Optional[str] = None,
+    plate_by_track: Optional[Mapping[int, str]] = None,
 ) -> np.ndarray:
     """
     Same as draw_detections() but adds the track ID badge to each tracked
@@ -147,8 +166,13 @@ def draw_tracked_detections(
         cv2.rectangle(out, (x1, y1), (x2, y2), colour, 2)
 
         track_id = getattr(det, "track_id", -1)
+        track_plate = _plate_for_track(track_id, plate_by_track) or (
+            ocr_plate if cls in VEHICLE_CLASSES else None
+        )
         if track_id >= 0:
             label = f"ID:{track_id} {det.class_name.replace('_', ' ')} {det.confidence:.0%}"
+            if track_plate and cls in VEHICLE_CLASSES:
+                label += f" {track_plate}"
         elif det.class_name in ("license_plate", "Number_plate") and ocr_plate:
             label = f"Plate: {ocr_plate} {det.confidence:.0%}"
         else:
@@ -169,6 +193,7 @@ def draw_verdict_overlay(
     plate: Optional[str],
     frame_idx: int,
     total_frames: int,
+    vehicle_plate_lines: Optional[list[str]] = None,
 ) -> np.ndarray:
     """
     Draw a semi-transparent verdict panel in the top-left corner.
@@ -198,6 +223,10 @@ def draw_verdict_overlay(
         (f"Consistency: {result.frame_consistency_ratio:.0%}",   (180, 180, 180), 0.45 * scale_factor, 1),
         (f"Frame     : {frame_idx}/{total_frames}",              (150, 150, 150), 0.45 * scale_factor, 1),
     ]
+    if vehicle_plate_lines:
+        lines.append(("Vehicles:", (255, 255, 255), 0.48 * scale_factor, 1))
+        for text in vehicle_plate_lines[:8]:
+            lines.append((text, (210, 230, 230), 0.43 * scale_factor, 1))
 
     pad = int(10 * scale_factor)
     line_gap = int(4 * scale_factor)
@@ -226,6 +255,8 @@ def render_full_annotated_video(
     track_results: dict,
     verification_result: VerificationResult,
     number_plate: Optional[str] = None,
+    plate_by_track: Optional[Mapping[int, str]] = None,
+    vehicle_plate_lines: Optional[list[str]] = None,
     output_video_path: str = "evidence_video.mp4",
     fps: float = 2.0,
 ) -> Optional[str]:
@@ -255,13 +286,24 @@ def render_full_annotated_video(
     for i, frame in enumerate(frames):
         fd = frame_detections[i]
         if frame.timestamp in track_results:
-            annotated = draw_tracked_detections(frame.image, track_results[frame.timestamp], number_plate)
+            annotated = draw_tracked_detections(
+                frame.image,
+                track_results[frame.timestamp],
+                number_plate,
+                plate_by_track=plate_by_track,
+            )
         else:
             annotated = draw_detections(frame.image, fd.detections, number_plate)
 
-        annotated = draw_verdict_overlay(annotated, verification_result, number_plate, i + 1, total)
+        annotated = draw_verdict_overlay(
+            annotated,
+            verification_result,
+            number_plate,
+            i + 1,
+            total,
+            vehicle_plate_lines=vehicle_plate_lines,
+        )
         out.write(annotated)
 
     out.release()
     return output_video_path
-

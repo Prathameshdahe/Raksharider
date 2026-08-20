@@ -457,13 +457,39 @@ def find_nearest_track_id(
     px_c = (plate_bbox[0] + plate_bbox[2]) / 2
     py_c = (plate_bbox[1] + plate_bbox[3]) / 2
 
+    vehicle_classes = {
+        "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
+        "auto_rickshaw", "vehicle",
+    }
+    p_w = max(1.0, plate_bbox[2] - plate_bbox[0])
+    p_h = max(1.0, plate_bbox[3] - plate_bbox[1])
+    adaptive_max_dist = max(max_dist_px, p_w * 6.0, p_h * 8.0)
+
     best_id: Optional[int] = None
-    best_dist = max_dist_px
+    best_inside_area: Optional[float] = None
+    best_dist = adaptive_max_dist
 
     for td in tracked_dets:
         if not hasattr(td, "bbox") or not hasattr(td, "track_id"):
             continue
+        if getattr(td, "track_id", -1) < 0:
+            continue
+        if getattr(td, "class_name", "") not in vehicle_classes:
+            continue
+
         bx1, by1, bx2, by2 = td.bbox
+
+        # Strong match: plate centroid lies inside a tracked vehicle box.
+        if bx1 <= px_c <= bx2 and by1 <= py_c <= by2:
+            area = max(1.0, (bx2 - bx1) * (by2 - by1))
+            if best_inside_area is None or area < best_inside_area:
+                best_inside_area = area
+                best_id = td.track_id
+            continue
+
+        if best_inside_area is not None:
+            continue
+
         cx = (bx1 + bx2) / 2
         cy = (by1 + by2) / 2
         dist = ((px_c - cx) ** 2 + (py_c - cy) ** 2) ** 0.5

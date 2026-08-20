@@ -46,6 +46,7 @@ def build_report(
     notes:                str   = "",
     run_id:               Optional[str] = None,
     track_history:        Optional[Dict] = None,   # {track_id: track_info_dict}
+    vehicles_detected:    Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Build the final JSON-serialisable report dict and save evidence frames.
@@ -99,6 +100,7 @@ def build_report(
             "plate":          number_plate,
             "plate_confidence": plate_read_confidence,
             "plate_flag":     plate_flag,   # ok/missing/low_confidence/invalid_format
+            "all_tracked_vehicles": vehicles_detected or [],
         },
 
         # ── Road camera detections ────────────────────────────────────────────

@@ -50,7 +50,10 @@ PHONE_PERSON_IOU_THRESHOLD: float = 0.05    # very loose — phone is small
 
 # Erratic driving
 ERRATIC_WINDOW_FRAMES:    int   = 8         # sliding window size
-ERRATIC_VARIANCE_THRESHOLD: float = 3500.0  # centroid variance in px² — tune per camera
+ERRATIC_MIN_STEP_PX:      float = 12.0      # ignore tiny detector jitter (raised from 8)
+ERRATIC_MIN_LATERAL_RANGE_PX: float = 220.0 # must genuinely weave across frame (raised from 150)
+ERRATIC_MIN_PATH_PX:      float = 600.0     # ignore small local jitter (raised from 400)
+ERRATIC_MIN_SIGN_CHANGES: int   = 4         # left-right-left-right pattern (raised from 3)
 
 # Signal detection
 SIGNAL_RED_HSV_LOWER   = np.array([0,   100, 100], dtype=np.uint8)
@@ -194,6 +197,10 @@ class ErraticDrivingDetector:
     def __init__(self) -> None:
         # track_id → deque of (cx, cy) centroids
         self._history: dict[int, deque[tuple[float, float]]] = {}
+        self._vehicle_classes = {
+            "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
+            "auto_rickshaw", "vehicle",
+        }
 
     def update(self, tracked_dets: list) -> set[int]:
         """
@@ -205,6 +212,8 @@ class ErraticDrivingDetector:
         for det in tracked_dets:
             tid = getattr(det, "track_id", -1)
             if tid < 0:
+                continue
+            if getattr(det, "class_name", "") not in self._vehicle_classes:
                 continue
 
             x1, y1, x2, y2 = det.bbox
@@ -218,19 +227,38 @@ class ErraticDrivingDetector:
             if len(self._history[tid]) < ERRATIC_WINDOW_FRAMES:
                 continue
 
-            # Compute variance of centroid positions in window
-            xs = [p[0] for p in self._history[tid]]
-            ys = [p[1] for p in self._history[tid]]
-            mean_x = sum(xs) / len(xs)
-            mean_y = sum(ys) / len(ys)
-            var_x  = sum((x - mean_x)**2 for x in xs) / len(xs)
-            var_y  = sum((y - mean_y)**2 for y in ys) / len(ys)
-            variance = var_x + var_y
+            pts = list(self._history[tid])
+            vectors: list[tuple[float, float]] = []
+            for a, b in zip(pts, pts[1:]):
+                dx = b[0] - a[0]
+                dy = b[1] - a[1]
+                if math.hypot(dx, dy) >= ERRATIC_MIN_STEP_PX:
+                    vectors.append((dx, dy))
 
-            if variance > ERRATIC_VARIANCE_THRESHOLD:
+            if len(vectors) < 3:
+                continue
+
+            dx_signs = [
+                1 if dx > 0 else -1
+                for dx, _ in vectors
+                if abs(dx) >= ERRATIC_MIN_STEP_PX
+            ]
+            sign_changes = sum(
+                1 for a, b in zip(dx_signs, dx_signs[1:])
+                if a != b
+            )
+            xs = [p[0] for p in pts]
+            lateral_range = max(xs) - min(xs)
+            path_length = sum(math.hypot(dx, dy) for dx, dy in vectors)
+
+            if (
+                sign_changes >= ERRATIC_MIN_SIGN_CHANGES
+                and lateral_range >= ERRATIC_MIN_LATERAL_RANGE_PX
+                and path_length >= ERRATIC_MIN_PATH_PX
+            ):
                 logger.info(
-                    "Erratic driving: track_id=%d variance=%.1f > %.1f",
-                    tid, variance, ERRATIC_VARIANCE_THRESHOLD,
+                    "Erratic driving: track_id=%d sign_changes=%d lateral_range=%.1f path=%.1f",
+                    tid, sign_changes, lateral_range, path_length,
                 )
                 erratic_ids.add(tid)
 

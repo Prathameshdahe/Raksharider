@@ -3,7 +3,7 @@ pipeline/tracker.py
 ───────────────────
 ByteTrack-style multi-object tracker for the DriveTrust AI pipeline.
 
-Assigns stable integer IDs to person and motorcycle detections across
+Assigns stable integer IDs to person and road-vehicle detections across
 frames so the same physical object keeps the same ID throughout a clip,
 instead of being re-counted every frame.
 
@@ -55,7 +55,18 @@ logger = logging.getLogger(__name__)
 # ── Tunable constants ─────────────────────────────────────────────────────────
 
 # Classes that get tracked (others pass through with track_id = -1)
-TRACKED_CLASSES: set[str] = {"person", "motorcycle"}
+TRACKED_CLASSES: set[str] = {
+    "person",
+    "motorcycle",
+    "bicycle",
+    "car",
+    "bus",
+    "truck",
+    "mini_lcv",
+    "auto_rickshaw",
+    "vehicle",
+}
+VEHICLE_TRACK_CLASSES: set[str] = TRACKED_CLASSES - {"person"}
 
 # Minimum IoU to consider a detection-track pair a match
 IOU_MATCH_THRESHOLD: float     = 0.3
@@ -117,9 +128,15 @@ class _KalmanTrack:
 
     # Last seen bbox (for IoU matching when filter diverges)
     last_bbox:   list[float] = field(default_factory=list)
+    confidence:  float = 0.0
 
     @staticmethod
-    def from_bbox(track_id: int, class_name: str, bbox: list[float]) -> "_KalmanTrack":
+    def from_bbox(
+        track_id: int,
+        class_name: str,
+        bbox: list[float],
+        confidence: float = 0.0,
+    ) -> "_KalmanTrack":
         """Initialise a new track from a detection bbox [x1,y1,x2,y2]."""
         x1, y1, x2, y2 = bbox
         cx = (x1 + x2) / 2.0
@@ -138,6 +155,7 @@ class _KalmanTrack:
             x=x, P=P,
             hits=1, age=1,
             last_bbox=list(bbox),
+            confidence=confidence,
         )
 
     def predict(self) -> list[float]:
@@ -158,7 +176,7 @@ class _KalmanTrack:
         self.time_since_last_match += 1
         return self._state_to_bbox()
 
-    def update(self, bbox: list[float]) -> None:
+    def update(self, bbox: list[float], confidence: float | None = None) -> None:
         """Kalman update step with a matched detection bbox."""
         x1, y1, x2, y2 = bbox
         z = np.array([
@@ -183,6 +201,8 @@ class _KalmanTrack:
         self.P = (np.eye(8) - K @ H) @ self.P
 
         self.last_bbox = list(bbox)
+        if confidence is not None:
+            self.confidence = max(self.confidence * 0.7, confidence)
         self.hits += 1
         self.time_since_last_match = 0
         self.is_lost = False
@@ -288,8 +308,13 @@ class Tracker:
         self._active:  list[_KalmanTrack] = []
         self._lost:    list[_KalmanTrack] = []
 
-    def _new_track(self, class_name: str, bbox: list[float]) -> _KalmanTrack:
-        t = _KalmanTrack.from_bbox(self._next_id, class_name, bbox)
+    def _new_track(self, det: Detection) -> _KalmanTrack:
+        t = _KalmanTrack.from_bbox(
+            self._next_id,
+            det.class_name,
+            det.bbox,
+            det.confidence,
+        )
         self._next_id += 1
         return t
 
@@ -320,7 +345,10 @@ class Tracker:
         )
 
         for det_idx, trk_idx in matches1:
-            self._active[trk_idx].update(high_dets[det_idx].bbox)
+            self._active[trk_idx].update(
+                high_dets[det_idx].bbox,
+                high_dets[det_idx].confidence,
+            )
 
         # Unmatched active tracks → move to lost
         newly_lost: list[_KalmanTrack] = []
@@ -339,7 +367,10 @@ class Tracker:
             )
             revived_lost_indices: set[int] = set()
             for det_idx, trk_idx in matches2:
-                self._lost[trk_idx].update(low_dets[det_idx].bbox)
+                self._lost[trk_idx].update(
+                    low_dets[det_idx].bbox,
+                    low_dets[det_idx].confidence,
+                )
                 self._lost[trk_idx].is_lost = False
                 self._lost[trk_idx].lost_age = 0
                 self._active.append(self._lost[trk_idx])
@@ -349,10 +380,7 @@ class Tracker:
 
         # ── Spawn new tracks for unmatched high-conf dets ─────────────────────
         for det_idx in unmatched_high:
-            new_trk = self._new_track(
-                high_dets[det_idx].class_name,
-                high_dets[det_idx].bbox,
-            )
+            new_trk = self._new_track(high_dets[det_idx])
             self._active.append(new_trk)
 
         # ── Prune expired lost tracks ──────────────────────────────────────────
@@ -376,15 +404,17 @@ class Tracker:
                 track_id=-1,
             ))
 
-        # Confirmed + tentative tracked detections
-        # Build a bbox→track_id lookup from active tracks that were just updated
-        # (time_since_last_match == 0 means updated this frame)
+        # Confirmed + tentative tracked detections. Keep very recent predicted
+        # boxes for confirmed tracks so annotated videos do not flicker when a
+        # detector misses a frame.
         for trk in self._active:
-            if trk.time_since_last_match == 0:
+            if trk.time_since_last_match == 0 or (trk.is_confirmed and trk.time_since_last_match <= 3):
+                bbox = trk.last_bbox if trk.time_since_last_match == 0 else trk.predicted_bbox()
+                decay = max(0.25, 1.0 - 0.2 * trk.time_since_last_match)
                 output.append(TrackedDetection(
                     class_name=trk.class_name,
-                    confidence=0.0,          # use track's smoothed position
-                    bbox=trk.last_bbox,
+                    confidence=trk.confidence * decay,
+                    bbox=bbox,
                     track_id=trk.track_id,
                 ))
 
