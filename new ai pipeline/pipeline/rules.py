@@ -114,6 +114,28 @@ def _head_box(person_bbox: List[float]) -> List[float]:
     return [x1, y1, x2, y1 + (y2 - y1) * HEAD_FRACTION]
 
 
+def _resolve_contested_rider(
+    person_bbox: List[float],
+    moto_a_bbox: List[float],
+    moto_b_bbox: List[float],
+    idx_a: int,
+    idx_b: int,
+) -> int:
+    """
+    Ported from DashCop inference/instance_funcs.py (motor2_rider_iou_tracks pattern).
+
+    When a rider overlaps two motorcycles with similar scores, explicitly compute
+    full IoU between the rider and each motorcycle, then assign the rider to the
+    motorcycle with the HIGHER IoU.  This prevents the common dashcam error where
+    a pedestrian walking between two parked bikes gets double-counted.
+
+    Returns: the winning motorcycle index (idx_a or idx_b).
+    """
+    iou_a = _iou(person_bbox, moto_a_bbox)
+    iou_b = _iou(person_bbox, moto_b_bbox)
+    return idx_a if iou_a >= iou_b else idx_b
+
+
 def _dominant_vehicle_class(fd: FrameDetections) -> str:
     """
     Pick the most-specific vehicle class present in this frame.
@@ -174,7 +196,11 @@ def apply_rules(
     rider_count = 0
 
     if motorcycles:  # ← guard: only evaluate rider/helmet on frames with motorcycles
-        for person in persons:
+        # Track the current assignment: person_idx → moto_idx
+        # Allows contested-rider re-resolution (DashCop pattern)
+        person_to_moto: dict[int, int] = {}   # person list index → moto index
+
+        for p_idx, person in enumerate(persons):
             px1, py1, px2, py2 = person.bbox
             px_c = (px1 + px2) / 2.0
             ph = py2 - py1
@@ -210,10 +236,33 @@ def apply_rules(
                     best_overlap_score = overlap_score
                     best_moto_idx = m_idx
 
-            if best_moto_idx is not None:
+            if best_moto_idx is None:
+                continue
+
+            # ── Contested-rider resolution (DashCop motor2_rider_iou_tracks) ──
+            # If this person was already assigned to a DIFFERENT motorcycle,
+            # run the explicit IoU tie-breaker to decide the true owner.
+            if p_idx in person_to_moto:
+                prev_moto_idx = person_to_moto[p_idx]
+                if prev_moto_idx != best_moto_idx:
+                    winner_idx = _resolve_contested_rider(
+                        person.bbox,
+                        motorcycles[prev_moto_idx].bbox,
+                        motorcycles[best_moto_idx].bbox,
+                        prev_moto_idx,
+                        best_moto_idx,
+                    )
+                    # Remove person from the losing motorcycle's roster
+                    loser_idx = best_moto_idx if winner_idx == prev_moto_idx else prev_moto_idx
+                    if person in moto_to_riders[loser_idx]:
+                        moto_to_riders[loser_idx].remove(person)
+                    best_moto_idx = winner_idx
+
+            person_to_moto[p_idx] = best_moto_idx
+            if person not in moto_to_riders[best_moto_idx]:
                 moto_to_riders[best_moto_idx].append(person)
-                if person not in all_assigned_riders:
-                    all_assigned_riders.append(person)
+            if person not in all_assigned_riders:
+                all_assigned_riders.append(person)
 
         # Max riders on ANY SINGLE motorcycle in this frame
         max_riders_on_single_moto = max(
