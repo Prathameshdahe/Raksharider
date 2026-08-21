@@ -347,12 +347,38 @@ def run(
                     "vehicle_type":        vr.vehicle_type,
                 }
                 old_status = vr.status
+                # Compute which violations were confirmed in ≥3 frames
+                # so the VLM cannot downgrade those high-confidence detections.
+                HIGH_CONF_MIN_FRAMES = 3
+                viol_frame_counts: dict[str, int] = {}
+                for fv in frame_verdicts:
+                    for v in fv.violations:
+                        viol_frame_counts[v] = viol_frame_counts.get(v, 0) + 1
+                locked_violations = {
+                    v for v, cnt in viol_frame_counts.items()
+                    if cnt >= HIGH_CONF_MIN_FRAMES
+                }
+                if locked_violations:
+                    print(f"    VLM: high-confidence violations locked (seen ≥{HIGH_CONF_MIN_FRAMES} frames): "
+                          f"{sorted(locked_violations)}")
+
                 try:
                     new_status, reasoning = vlm_tiebreaker(best_frame, summary, vr.status)
                     print(f"    VLM verdict: {old_status} -> {new_status}")
                     print(f"    Reasoning  : {reasoning}")
-                    vr.status         = new_status
-                    vr.vlm_reasoning  = reasoning
+                    # Guard: if high-confidence violations exist, VLM can only
+                    # confirm or escalate — never downgrade to insufficient_evidence.
+                    if locked_violations and new_status == "insufficient_evidence":
+                        logger.info(
+                            "VLM downgrade blocked: locked violations %s prevent "
+                            "status drop to 'insufficient_evidence'.",
+                            sorted(locked_violations),
+                        )
+                        print(f"    VLM downgrade blocked (locked violations present) — "
+                              f"retaining '{old_status}'")
+                        new_status = old_status
+                    vr.status        = new_status
+                    vr.vlm_reasoning = reasoning
                 except Exception as vlm_exc:
                     vlm_error = f"VLM call failed: {vlm_exc}"
                     logger.warning("VLM tiebreaker error — retaining '%s': %s", vr.status, vlm_exc)

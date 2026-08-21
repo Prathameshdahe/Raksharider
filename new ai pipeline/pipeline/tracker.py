@@ -474,6 +474,12 @@ class Tracker:
         return output
 
 
+# Classes that benefit from post-hoc stitching (fast movers that fragment).
+# Cars/trucks are large and slow — their boxes always overlap, so they don't
+# fragment. Stitching them causes false trajectory merges that look erratic.
+STITCH_CLASSES: set[str] = {"motorcycle", "bicycle", "auto_rickshaw"}
+
+
 def stitch_track_fragments(
     track_results: dict,
     class_name_for_id: dict,
@@ -542,6 +548,12 @@ def stitch_track_fragments(
         last_ts_a, last_bbox_a = timeline[tid_a][-1]
         cx_a, cy_a = _centroid(last_bbox_a)
         class_a = class_name_for_id.get(tid_a, "")
+
+        # Only stitch fast two-wheelers that actually fragment.
+        # Cars/trucks are stable; stitching them merges different vehicles
+        # into one trajectory and creates false erratic-driving signals.
+        if class_a not in STITCH_CLASSES:
+            continue
 
         for tid_b in track_ids[i + 1:]:
             first_ts_b, first_bbox_b = timeline[tid_b][0]
