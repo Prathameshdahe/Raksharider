@@ -527,7 +527,7 @@ def main():
     parser.add_argument("--interval",      type=float, default=0.5,
                         help="Seconds between sampled frames (default: 0.5)")
     parser.add_argument("--out",           type=str,   default=None,
-                        help="Output directory (default: pipeline/evidence_output/<stem>)")
+                        help="Output directory (default: pipeline/evidence_output/latest — overwritten each run)")
     parser.add_argument("--track",         action="store_true",
                         help="Enable ByteTrack persistent vehicle ID assignment (recommended)")
     parser.add_argument("--vlm",           action="store_true",
@@ -542,8 +542,17 @@ def main():
         print(f"ERROR: File not found: {args.source}", file=sys.stderr)
         sys.exit(1)
 
-    out_dir = (Path(args.out) if args.out
-               else Path("pipeline/evidence_output") / Path(args.source).stem)
+    # Default: always write to one fixed 'latest' folder (overwrite each run).
+    # Pass --out to save a named run alongside it.
+    LATEST_DIR = Path("pipeline/evidence_output/latest")
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        import shutil
+        if LATEST_DIR.exists():
+            shutil.rmtree(LATEST_DIR)
+            print(f"  (Cleared previous run — {LATEST_DIR})")
+        out_dir = LATEST_DIR
 
     run(
         source=args.source,
