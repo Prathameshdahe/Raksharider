@@ -62,10 +62,10 @@ from pipeline.detector        import detect_frames
 from pipeline.rules           import apply_rules_to_all
 from pipeline.ocr             import read_plate, majority_vote_plate
 from pipeline.plate_aggregator import PlateAggregator, find_nearest_track_id
-from pipeline.verification    import aggregate_verdicts
+from pipeline.verification    import aggregate_verdicts, resolve_dominant_vehicle_type
 from pipeline.report          import build_report, report_to_json
 from pipeline.annotator       import draw_detections, draw_verdict_overlay, draw_tracked_detections
-from pipeline.tracker         import Tracker
+from pipeline.tracker         import Tracker, stitch_track_fragments
 from pipeline.heuristics      import WheelieDetector, ErraticDrivingDetector
 
 STATUS_COLOURS = {
@@ -141,6 +141,25 @@ def run(
         total_track_ids = tracker._next_id - 1
         print(f"    Total unique IDs assigned: {total_track_ids}")
 
+        # Build class_name_for_id mapping for the stitcher
+        class_name_for_id: dict[int, str] = {}
+        for ts_tracked in track_results.values():
+            for det in ts_tracked:
+                if det.track_id > 0 and det.track_id not in class_name_for_id:
+                    class_name_for_id[det.track_id] = det.class_name
+
+        # Post-hoc track stitcher: merge fragment pairs of the same class
+        # that end and immediately start nearby in space/time.
+        id_map = stitch_track_fragments(track_results, class_name_for_id)
+        n_merged = sum(1 for old, new in id_map.items() if old != new)
+        if n_merged:
+            print(f"    Track stitcher: merged {n_merged} fragment(s) into canonical IDs")
+            # Remap track_ids in track_results in-place
+            for ts_tracked in track_results.values():
+                for det in ts_tracked:
+                    if det.track_id in id_map:
+                        det.track_id = id_map[det.track_id]
+
         # Build track_history for report
         for trk in list(tracker._active) + list(tracker._lost):
             track_history[trk.track_id] = {
@@ -180,14 +199,26 @@ def run(
     if wheelie_frames: print(f"      Wheelie:     {wheelie_frames}/{len(frames)} frames")
     if erratic_frames: print(f"      Erratic:     {erratic_frames}/{len(frames)} frames")
 
+    # Subject-vehicle identification — needed before OCR resolution so a
+    # plate read on the flagged vehicle's own track outranks a cleaner read
+    # on an unrelated bystander vehicle (see plate attribution below).
+    dominant_vehicle_type = resolve_dominant_vehicle_type(frame_verdicts)
+
+    vehicle_classes = {"motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle"}
+    vehicle_track_labels: dict[int, str] = {}
+    for tracked in track_results.values():
+        for det in tracked:
+            if det.track_id >= 0 and det.class_name in vehicle_classes:
+                prev = vehicle_track_labels.get(det.track_id)
+                if prev is None or det.class_name != "vehicle":
+                    vehicle_track_labels[det.track_id] = det.class_name
+
     # ── Stage 5: OCR (3-tier track-keyed aggregation) ────────────────────────
     _stage(5, "License Plate OCR (ampr.pt -> EasyOCR -> PaddleOCR -> Gemini VLM)")
     aggregator = PlateAggregator()
 
     for i, fd in enumerate(frame_detections):
         plates = fd.by_class("license_plate")
-        if not plates:
-            continue
         tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
         for plate in sorted(plates, key=lambda d: d.confidence, reverse=True):
             track_id = find_nearest_track_id(plate.bbox, tracked_in_frame) or -1
@@ -197,71 +228,41 @@ def run(
                 plate_bbox=plate.bbox,
                 timestamp=fd.timestamp,
                 frame_index=i,
+                detector_confidence=plate.confidence,
             )
             if raw:
                 status_lbl = "valid" if raw.is_valid else "invalid format"
                 print(f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] -> '{raw.text}' [{status_lbl}]")
 
-    # Tier 2 escalation: run PaddleOCR on tracks that never got a valid EasyOCR read
-    for tid in aggregator.track_ids():
-        if not aggregator.has_valid_reads(tid):
-            # Find the best plate frame for this track
-            best_i, best_plate_det = None, None
-            for i, fd in enumerate(frame_detections):
-                plates = fd.by_class("license_plate")
-                if not plates:
+        if use_tracker:
+            plate_track_ids = {
+                find_nearest_track_id(plate.bbox, tracked_in_frame)
+                for plate in plates
+            }
+            for det in tracked_in_frame:
+                if det.track_id < 0 or det.track_id in plate_track_ids:
                     continue
-                tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
-                matched_tid = find_nearest_track_id(
-                    max(plates, key=lambda d: d.confidence).bbox, tracked_in_frame
+                if det.class_name not in {"motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle"}:
+                    continue
+                aggregator.add_vehicle_roi_candidate(
+                    track_id=det.track_id,
+                    frame_bgr=frames[i].image,
+                    vehicle_bbox=det.bbox,
+                    vehicle_class=det.class_name,
+                    vehicle_confidence=det.confidence,
+                    timestamp=fd.timestamp,
+                    frame_index=i,
                 )
-                if matched_tid == tid:
-                    best_i = i
-                    best_plate_det = max(plates, key=lambda d: d.confidence)
-            if best_i is not None and best_plate_det is not None:
-                paddle_raw = aggregator.escalate_to_paddle(
-                    track_id=tid,
-                    frame_bgr=frames[best_i].image,
-                    plate_bbox=best_plate_det.bbox,
-                    timestamp=frames[best_i].timestamp,
-                    frame_index=best_i,
-                )
-                if paddle_raw:
-                    status_lbl = "valid" if paddle_raw.is_valid else "invalid format"
-                    print(f"      [PaddleOCR track {tid}] -> '{paddle_raw.text}' [{status_lbl}]")
 
-    # Tier 3 escalation: VLM plate reading for tracks still unresolved after Tier 1+2
+    # Improvement pass: strengthen weak EasyOCR results and recover missed plate boxes.
     for tid in aggregator.track_ids():
-        if not aggregator.has_valid_reads(tid):
-            # Only worth the VLM call if we had multiple plate detections (genuinely detected)
-            num_plate_frames = sum(
-                1 for fd in frame_detections
-                if fd.by_class("license_plate") and
-                find_nearest_track_id(
-                    max(fd.by_class("license_plate"), key=lambda d: d.confidence).bbox,
-                    track_results.get(fd.timestamp, []) if use_tracker else [],
-                ) == tid
-            )
-            if num_plate_frames >= 2:
-                for i, fd in enumerate(frame_detections):
-                    plates = fd.by_class("license_plate")
-                    if not plates:
-                        continue
-                    tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
-                    if find_nearest_track_id(
-                        max(plates, key=lambda d: d.confidence).bbox, tracked_in_frame
-                    ) == tid:
-                        vlm_raw = aggregator.escalate_to_vlm(
-                            track_id=tid,
-                            frame_bgr=frames[i].image,
-                            plate_bbox=max(plates, key=lambda d: d.confidence).bbox,
-                            timestamp=fd.timestamp,
-                            frame_index=i,
-                        )
-                        if vlm_raw:
-                            status_lbl = "valid" if vlm_raw.is_valid else "invalid format"
-                            print(f"      [VLM Plate track {tid}] -> '{vlm_raw.text}' [{status_lbl}]")
-                        break  # One VLM call per track is enough
+        if tid < 0:
+            continue
+        if aggregator.needs_escalation(tid):
+            added_reads = aggregator.improve_track(tid, use_vlm=True)
+            for raw in added_reads:
+                status_lbl = "valid" if raw.is_valid else "invalid format"
+                print(f"      [{raw.tier} {raw.source} track {tid}] -> '{raw.text}' [{status_lbl}]")
 
     # Final resolution: pick best plate across all tracks
     resolutions = aggregator.resolve_all()
@@ -270,7 +271,8 @@ def run(
         for tid, res in resolutions.items()
         if tid >= 0 and res.plate_text and res.is_validated
     }
-    best_resolution = aggregator.best_result(resolutions)
+    subject_track_ids = {tid for tid, cls in vehicle_track_labels.items() if cls == dominant_vehicle_type}
+    best_resolution = aggregator.best_result(resolutions, preferred_track_ids=subject_track_ids)
     if best_resolution:
         number_plate   = best_resolution.plate_text
         ocr_agreement  = best_resolution.agreement
@@ -281,15 +283,6 @@ def run(
         number_plate  = None
         ocr_agreement = 0.0
         print("    Final plate: <unreadable> (no detections)")
-
-    vehicle_classes = {"motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle"}
-    vehicle_track_labels: dict[int, str] = {}
-    for tracked in track_results.values():
-        for det in tracked:
-            if det.track_id >= 0 and det.class_name in vehicle_classes:
-                prev = vehicle_track_labels.get(det.track_id)
-                if prev is None or det.class_name != "vehicle":
-                    vehicle_track_labels[det.track_id] = det.class_name
 
     vehicle_plate_lines = [
         f"ID:{tid} {cls.replace('_', ' ')} plate: {plate_by_track.get(tid, 'unreadable')}"
@@ -322,11 +315,21 @@ def run(
     print(f"    Violations        : {vr.violations_detected or 'none'}")
 
     # ── Stage 7: VLM tiebreaker ───────────────────────────────────────────────
-    _stage(7, "VLM Tiebreaker" + (" (Gemini Vision)" if use_vlm else " (skipped)"))
-    if use_vlm and vr.status == "needs_review":
-        from pipeline.vlm import vlm_tiebreaker, check_vlm_available
+    from pipeline.vlm import check_vlm_available
+    vlm_auto = (not use_vlm) and vr.status == "needs_review" and check_vlm_available()
+    vlm_active = use_vlm or vlm_auto
+    if vlm_auto:
+        print(f"  [{7}/{STAGES}] VLM Tiebreaker (auto-escalated — needs_review + VLM available)")
+    else:
+        _stage(7, "VLM Tiebreaker" + (" (Gemini Vision)" if use_vlm else " (skipped)"))
+
+    vlm_error: str = ""
+    if vlm_active and vr.status == "needs_review":
+        from pipeline.vlm import vlm_tiebreaker
         if not check_vlm_available():
-            print("    VLM skipped: NVIDIA_NIM_API_KEY not configured.")
+            msg = "No VLM key configured (GEMINI_API_KEY or NVIDIA_NIM_API_KEY missing)."
+            print(f"    VLM skipped: {msg}")
+            vlm_error = msg
         else:
             # Use best evidence frame as input
             best_ts   = vr.evidence_frame_timestamps[0] if vr.evidence_frame_timestamps else None
@@ -344,13 +347,18 @@ def run(
                     "vehicle_type":        vr.vehicle_type,
                 }
                 old_status = vr.status
-                new_status, reasoning = vlm_tiebreaker(best_frame, summary, vr.status)
-                print(f"    VLM verdict: {old_status} -> {new_status}")
-                print(f"    Reasoning  : {reasoning}")
-                vr.status         = new_status
-                vr.vlm_reasoning  = reasoning
+                try:
+                    new_status, reasoning = vlm_tiebreaker(best_frame, summary, vr.status)
+                    print(f"    VLM verdict: {old_status} -> {new_status}")
+                    print(f"    Reasoning  : {reasoning}")
+                    vr.status         = new_status
+                    vr.vlm_reasoning  = reasoning
+                except Exception as vlm_exc:
+                    vlm_error = f"VLM call failed: {vlm_exc}"
+                    logger.warning("VLM tiebreaker error — retaining '%s': %s", vr.status, vlm_exc)
+                    print(f"    VLM error: {vlm_error}")
 
-                if new_status != old_status:
+                if vr.status != old_status:
                     try:
                         from pipeline.hard_case_miner import log_hard_case
                         saved_case = log_hard_case(
@@ -359,8 +367,8 @@ def run(
                             frame_bgr=best_frame,
                             rule_status=old_status,
                             rule_violations=vr.violations_detected,
-                            vlm_verdict=new_status,
-                            vlm_reasoning=reasoning,
+                            vlm_verdict=vr.status,
+                            vlm_reasoning=getattr(vr, "vlm_reasoning", ""),
                             trigger_reason="vlm_disagreement",
                             extra_metadata=summary,
                         )

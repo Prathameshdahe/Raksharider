@@ -73,6 +73,32 @@ class VerificationResult:
     front_cam:                 Dict        = field(default_factory=dict)
 
 
+def resolve_dominant_vehicle_type(frame_verdicts: List[FrameVerdict]) -> str:
+    """
+    Subject-first vehicle-type resolution, shared by aggregate_verdicts() and
+    run_pipeline.py's plate-attribution step (both need to agree on which
+    vehicle is "the subject" before OCR results can be attributed to it).
+
+    Priority (highest wins):
+      1. "motorcycle" if ANY frame saw rider_count > 0 AND vehicle_type == motorcycle
+         → the motorcycle WAS the subject, regardless of background car/truck count
+      2. Majority vote among violation frames (rider_count > 0 or violations fired)
+      3. Majority vote across all frames (fallback)
+    """
+    if not frame_verdicts:
+        return "unknown"
+    moto_rider_frames = [
+        fv for fv in frame_verdicts
+        if fv.rider_count > 0 and fv.vehicle_type == "motorcycle"
+    ]
+    if moto_rider_frames:
+        return "motorcycle"
+    violation_frames = [fv for fv in frame_verdicts if fv.rider_count > 0 or fv.violations]
+    vote_pool = violation_frames if violation_frames else frame_verdicts
+    vehicle_counter = Counter(fv.vehicle_type for fv in vote_pool)
+    return vehicle_counter.most_common(1)[0][0]
+
+
 def aggregate_verdicts(
     frame_verdicts:        List[FrameVerdict],
     ocr_agreement_ratio:   float = 0.0,
@@ -129,22 +155,7 @@ def aggregate_verdicts(
     frame_consistency_ratio = max(helmet_consistency, rider_consistency)
 
     # ── Vehicle type — subject-first resolution ───────────────────────────────
-    # Priority (highest wins):
-    #   1. "motorcycle" if ANY frame saw rider_count > 0 AND vehicle_type == motorcycle
-    #      → the motorcycle WAS the subject, regardless of background car/truck count
-    #   2. Majority vote among violation frames (rider_count > 0 or violations fired)
-    #   3. Majority vote across all frames (fallback)
-    moto_rider_frames = [
-        fv for fv in frame_verdicts
-        if fv.rider_count > 0 and fv.vehicle_type == "motorcycle"
-    ]
-    if moto_rider_frames:
-        dominant_vehicle = "motorcycle"
-    else:
-        violation_frames = [fv for fv in frame_verdicts if fv.rider_count > 0 or fv.violations]
-        vote_pool = violation_frames if violation_frames else frame_verdicts
-        vehicle_counter = Counter(fv.vehicle_type for fv in vote_pool)
-        dominant_vehicle = vehicle_counter.most_common(1)[0][0]
+    dominant_vehicle = resolve_dominant_vehicle_type(frame_verdicts)
 
     # ── Heuristic violations (lower consistency threshold) ────────────────────
     phone_frames    = sum(1 for fv in frame_verdicts if fv.phone_usage)
