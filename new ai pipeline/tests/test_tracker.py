@@ -170,6 +170,23 @@ class TestTrackerBasic:
             assert hasattr(td, "track_id"), \
                 f"TrackedDetection missing .track_id attribute: {td}"
 
+    def test_tracked_detection_preserves_confidence(self):
+        """Tracked vehicle labels should show detector confidence, not 0%."""
+        tracker = Tracker()
+        result = tracker.update(_fd(0.0, [_moto(100, 100, 260, 260, conf=0.82)]))
+        motos = [d for d in result if d.class_name == "motorcycle"]
+        assert motos
+        assert motos[0].confidence == pytest.approx(0.82)
+
+    def test_four_wheeler_gets_tracked(self):
+        """Cars and other road vehicles should also receive stable track IDs."""
+        tracker = Tracker()
+        result = tracker.update(_fd(0.0, [
+            Detection("car", 0.88, [100, 100, 300, 260]),
+        ]))
+        car_ids = [d.track_id for d in result if d.class_name == "car"]
+        assert car_ids and car_ids[0] >= 0
+
     def test_empty_frame_does_not_crash(self):
         """Tracker must handle frames with zero detections without error."""
         tracker = Tracker()

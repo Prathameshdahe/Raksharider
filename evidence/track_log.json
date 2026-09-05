@@ -1,0 +1,454 @@
+{
+  "run_id": "latest",
+  "generated_at": "2026-09-02T22:20:50.328124+00:00",
+  "tracks": {
+    "1": {
+      "class": "truck",
+      "first_seen": 2800.149,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "2": {
+      "class": "car",
+      "first_seen": 2.347,
+      "last_seen": 3.0,
+      "frame_count": 5,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "3": {
+      "class": "car",
+      "first_seen": 1643.041,
+      "last_seen": 4.0,
+      "frame_count": 7,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "4": {
+      "class": "car",
+      "first_seen": 2198.752,
+      "last_seen": 6.0,
+      "frame_count": 12,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "5": {
+      "class": "truck",
+      "first_seen": 2719.782,
+      "last_seen": 5.5,
+      "frame_count": 10,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "6": {
+      "class": "car",
+      "first_seen": 1790.328,
+      "last_seen": 4.0,
+      "frame_count": 7,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "7": {
+      "class": "car",
+      "first_seen": 2731.772,
+      "last_seen": 3.0,
+      "frame_count": 5,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "8": {
+      "class": "person",
+      "first_seen": 620.037,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "9": {
+      "class": "truck",
+      "first_seen": 2528.807,
+      "last_seen": 2.5,
+      "frame_count": 4,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "10": {
+      "class": "car",
+      "first_seen": 1587.805,
+      "last_seen": 6.5,
+      "frame_count": 12,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "11": {
+      "class": "car",
+      "first_seen": 764.851,
+      "last_seen": 6.0,
+      "frame_count": 11,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "12": {
+      "class": "car",
+      "first_seen": 3458.187,
+      "last_seen": 4.0,
+      "frame_count": 7,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "13": {
+      "class": "car",
+      "first_seen": 2223.604,
+      "last_seen": 10.0,
+      "frame_count": 19,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "14": {
+      "class": "car",
+      "first_seen": 1760.968,
+      "last_seen": 4.0,
+      "frame_count": 7,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "15": {
+      "class": "car",
+      "first_seen": 2739.284,
+      "last_seen": 3.5,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "16": {
+      "class": "car",
+      "first_seen": 2576.737,
+      "last_seen": 3.5,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "17": {
+      "class": "car",
+      "first_seen": 33.794,
+      "last_seen": 2.5,
+      "frame_count": 4,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "18": {
+      "class": "car",
+      "first_seen": 2260.394,
+      "last_seen": 10.5,
+      "frame_count": 20,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "19": {
+      "class": "car",
+      "first_seen": 1042.588,
+      "last_seen": 3.0,
+      "frame_count": 5,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "20": {
+      "class": "car",
+      "first_seen": 1775.402,
+      "last_seen": 11.5,
+      "frame_count": 22,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "21": {
+      "class": "car",
+      "first_seen": 2641.176,
+      "last_seen": 5.5,
+      "frame_count": 11,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "22": {
+      "class": "car",
+      "first_seen": 1900.424,
+      "last_seen": 5.5,
+      "frame_count": 10,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "23": {
+      "class": "car",
+      "first_seen": 3416.599,
+      "last_seen": 3.5,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "24": {
+      "class": "car",
+      "first_seen": 0.0,
+      "last_seen": 2.0,
+      "frame_count": 3,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "25": {
+      "class": "person",
+      "first_seen": 447.673,
+      "last_seen": 1.5,
+      "frame_count": 2,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "26": {
+      "class": "truck",
+      "first_seen": 120.037,
+      "last_seen": 3.5,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "27": {
+      "class": "car",
+      "first_seen": 1358.024,
+      "last_seen": 9.5,
+      "frame_count": 19,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "28": {
+      "class": "car",
+      "first_seen": 2214.129,
+      "last_seen": 4.5,
+      "frame_count": 8,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "29": {
+      "class": "person",
+      "first_seen": 0.118,
+      "last_seen": 2.0,
+      "frame_count": 3,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "30": {
+      "class": "person",
+      "first_seen": 255.529,
+      "last_seen": 2.0,
+      "frame_count": 3,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "31": {
+      "class": "person",
+      "first_seen": 327.388,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "32": {
+      "class": "person",
+      "first_seen": 474.084,
+      "last_seen": 1.5,
+      "frame_count": 2,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "33": {
+      "class": "car",
+      "first_seen": 121.534,
+      "last_seen": 7.0,
+      "frame_count": 13,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "34": {
+      "class": "car",
+      "first_seen": 916.356,
+      "last_seen": 7.5,
+      "frame_count": 14,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "35": {
+      "class": "car",
+      "first_seen": 2488.91,
+      "last_seen": 7.0,
+      "frame_count": 13,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "36": {
+      "class": "car",
+      "first_seen": 3327.904,
+      "last_seen": 5.0,
+      "frame_count": 9,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "37": {
+      "class": "car",
+      "first_seen": 1464.099,
+      "last_seen": 7.0,
+      "frame_count": 13,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "38": {
+      "class": "car",
+      "first_seen": 2947.38,
+      "last_seen": 3.0,
+      "frame_count": 5,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "39": {
+      "class": "car",
+      "first_seen": 3417.527,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "40": {
+      "class": "person",
+      "first_seen": 383.701,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "41": {
+      "class": "car",
+      "first_seen": 1341.002,
+      "last_seen": 5.5,
+      "frame_count": 10,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "42": {
+      "class": "person",
+      "first_seen": 85.706,
+      "last_seen": 2.0,
+      "frame_count": 3,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "43": {
+      "class": "person",
+      "first_seen": 0.315,
+      "last_seen": 1.5,
+      "frame_count": 2,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "44": {
+      "class": "person",
+      "first_seen": 729.168,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "45": {
+      "class": "person",
+      "first_seen": 1229.352,
+      "last_seen": 1.0,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "46": {
+      "class": "person",
+      "first_seen": 1703.919,
+      "last_seen": 3.5,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "47": {
+      "class": "motorcycle",
+      "first_seen": 1710.476,
+      "last_seen": 3.0,
+      "frame_count": 5,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "48": {
+      "class": "car",
+      "first_seen": 133.489,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "49": {
+      "class": "car",
+      "first_seen": 911.431,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "50": {
+      "class": "car",
+      "first_seen": 2645.04,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "51": {
+      "class": "car",
+      "first_seen": 1361.91,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "52": {
+      "class": "car",
+      "first_seen": 2288.311,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "53": {
+      "class": "car",
+      "first_seen": 1583.102,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "54": {
+      "class": "car",
+      "first_seen": 2219.826,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "55": {
+      "class": "car",
+      "first_seen": 1783.027,
+      "last_seen": 3.0,
+      "frame_count": 6,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    },
+    "56": {
+      "class": "motorcycle",
+      "first_seen": 0.271,
+      "last_seen": 0.5,
+      "frame_count": 1,
+      "avg_confidence": 0.0,
+      "violations_on_track": []
+    }
+  }
+}

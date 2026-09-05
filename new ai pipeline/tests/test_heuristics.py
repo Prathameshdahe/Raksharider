@@ -23,7 +23,6 @@ from pipeline.heuristics import (
     ErraticDrivingDetector,
     signal_color,
     WHEELIE_ASPECT_RATIO_THRESHOLD,
-    ERRATIC_VARIANCE_THRESHOLD,
 )
 
 
@@ -195,6 +194,15 @@ class TestErraticDriving:
             ])
         assert 1 in erratic,     "Erratic track should be flagged"
         assert 2 not in erratic, "Stable track should NOT be flagged"
+
+    def test_person_tracks_ignored(self):
+        """Only vehicle tracks should be considered for erratic driving."""
+        ed = ErraticDrivingDetector()
+        positions = [(10, 10), (600, 400), (50, 350), (700, 20),
+                     (200, 500), (800, 100), (30, 200), (900, 400)]
+        for x, y in positions:
+            erratic = ed.update([Det("person", 0.9, [x, y, x+80, y+150], track_id=1)])
+        assert 1 not in erratic
 
     def test_reset_clears_history(self):
         """After reset(), previously erratic tracks are no longer flagged."""

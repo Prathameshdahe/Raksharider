@@ -3,7 +3,7 @@ pipeline/tracker.py
 ───────────────────
 ByteTrack-style multi-object tracker for the DriveTrust AI pipeline.
 
-Assigns stable integer IDs to person and motorcycle detections across
+Assigns stable integer IDs to person and road-vehicle detections across
 frames so the same physical object keeps the same ID throughout a clip,
 instead of being re-counted every frame.
 
@@ -55,7 +55,18 @@ logger = logging.getLogger(__name__)
 # ── Tunable constants ─────────────────────────────────────────────────────────
 
 # Classes that get tracked (others pass through with track_id = -1)
-TRACKED_CLASSES: set[str] = {"person", "motorcycle"}
+TRACKED_CLASSES: set[str] = {
+    "person",
+    "motorcycle",
+    "bicycle",
+    "car",
+    "bus",
+    "truck",
+    "mini_lcv",
+    "auto_rickshaw",
+    "vehicle",
+}
+VEHICLE_TRACK_CLASSES: set[str] = TRACKED_CLASSES - {"person"}
 
 # Minimum IoU to consider a detection-track pair a match
 IOU_MATCH_THRESHOLD: float     = 0.3
@@ -71,6 +82,12 @@ MAX_AGE: int                    = 30
 
 # Max frames a lost track is kept before permanent deletion
 LOST_TTL: int                   = 60
+
+# ── Track stitching constants (post-hoc fragment merging) ─────────────────────
+# Max frame gap between end of track A and start of track B to stitch them
+STITCH_MAX_GAP: int    = 4
+# Max normalised centroid displacement (pixels / avg_size) to stitch
+STITCH_MAX_DIST_PX: float = 180.0
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -117,9 +134,15 @@ class _KalmanTrack:
 
     # Last seen bbox (for IoU matching when filter diverges)
     last_bbox:   list[float] = field(default_factory=list)
+    confidence:  float = 0.0
 
     @staticmethod
-    def from_bbox(track_id: int, class_name: str, bbox: list[float]) -> "_KalmanTrack":
+    def from_bbox(
+        track_id: int,
+        class_name: str,
+        bbox: list[float],
+        confidence: float = 0.0,
+    ) -> "_KalmanTrack":
         """Initialise a new track from a detection bbox [x1,y1,x2,y2]."""
         x1, y1, x2, y2 = bbox
         cx = (x1 + x2) / 2.0
@@ -138,6 +161,7 @@ class _KalmanTrack:
             x=x, P=P,
             hits=1, age=1,
             last_bbox=list(bbox),
+            confidence=confidence,
         )
 
     def predict(self) -> list[float]:
@@ -149,8 +173,20 @@ class _KalmanTrack:
         F[2, 6] = 1.0   # w  += vw
         F[3, 7] = 1.0   # h  += vh
 
-        # Process noise Q
-        Q = np.diag([1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.01, 0.01])
+        # Process noise Q — scale with predicted box size so fast-moving
+        # two-wheelers remain within the filter's uncertainty envelope
+        # across sparse 0.5-second sampling intervals.
+        w_est = max(1.0, abs(self.x[2]))
+        h_est = max(1.0, abs(self.x[3]))
+        pos_noise   = (w_est * 0.08) ** 2    # ~8% of width/height per step
+        vel_noise   = (w_est * 0.25) ** 2    # velocity uncertainty is larger
+        size_noise  = (w_est * 0.02) ** 2
+        Q = np.diag([
+            pos_noise, pos_noise,       # cx, cy
+            size_noise, size_noise,     # w, h
+            vel_noise, vel_noise,       # vx, vy
+            size_noise * 0.1, size_noise * 0.1,  # vw, vh
+        ])
 
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + Q
@@ -158,7 +194,7 @@ class _KalmanTrack:
         self.time_since_last_match += 1
         return self._state_to_bbox()
 
-    def update(self, bbox: list[float]) -> None:
+    def update(self, bbox: list[float], confidence: float | None = None) -> None:
         """Kalman update step with a matched detection bbox."""
         x1, y1, x2, y2 = bbox
         z = np.array([
@@ -183,6 +219,8 @@ class _KalmanTrack:
         self.P = (np.eye(8) - K @ H) @ self.P
 
         self.last_bbox = list(bbox)
+        if confidence is not None:
+            self.confidence = max(self.confidence * 0.7, confidence)
         self.hits += 1
         self.time_since_last_match = 0
         self.is_lost = False
@@ -217,21 +255,47 @@ def _iou(a: list[float], b: list[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def _centroid_dist_cost(det_bbox: list[float], trk_bbox: list[float]) -> float:
+    """
+    Normalised centroid distance cost (0..1) used as fallback when IoU=0.
+    Normalised by the average of the two box diagonals so pixel scale
+    doesn't matter — a cost of 0 means same centre, 1 means >=2 diagonals apart.
+    """
+    dx1, dy1 = (det_bbox[0] + det_bbox[2]) / 2, (det_bbox[1] + det_bbox[3]) / 2
+    dx2, dy2 = (trk_bbox[0] + trk_bbox[2]) / 2, (trk_bbox[1] + trk_bbox[3]) / 2
+    dist = ((dx1 - dx2) ** 2 + (dy1 - dy2) ** 2) ** 0.5
+    # Average diagonal of both boxes
+    diag_det = ((det_bbox[2]-det_bbox[0])**2 + (det_bbox[3]-det_bbox[1])**2) ** 0.5
+    diag_trk = ((trk_bbox[2]-trk_bbox[0])**2 + (trk_bbox[3]-trk_bbox[1])**2) ** 0.5
+    avg_diag = max(1.0, (diag_det + diag_trk) / 2)
+    return min(1.0, dist / (avg_diag * 2.0))   # cost in [0, 1]
+
+
 def _iou_cost_matrix(
     detections: List[list[float]],
     tracks: List[_KalmanTrack],
 ) -> np.ndarray:
     """
-    Build (N_det × N_track) cost matrix where cost = 1 - IoU.
-    Lower cost = better match (Hungarian minimises cost).
+    Build (N_det × N_track) cost matrix.
+    Primary cost  : 1 - IoU (as in standard ByteTrack)
+    Fallback cost : normalised centroid distance when IoU = 0 (box no longer
+                    overlaps, e.g. fast motorcycle across a 0.5-second gap).
+    The centroid fallback is capped at 0.95 so it never beats even a tiny
+    IoU match, but gives the Hungarian solver a gradient to prefer a nearby
+    no-overlap track over a distant one.
     """
     n_det   = len(detections)
     n_track = len(tracks)
     cost    = np.ones((n_det, n_track), dtype=float)
     for i, det_bbox in enumerate(detections):
         for j, trk in enumerate(tracks):
-            iou = _iou(det_bbox, trk.predicted_bbox())
-            cost[i, j] = 1.0 - iou
+            pred_bbox = trk.predicted_bbox()
+            iou = _iou(det_bbox, pred_bbox)
+            if iou > 0.0:
+                cost[i, j] = 1.0 - iou
+            else:
+                # Centroid fallback: cheaper than the worst-case 1.0
+                cost[i, j] = 0.70 + _centroid_dist_cost(det_bbox, pred_bbox) * 0.25
     return cost
 
 
@@ -288,8 +352,13 @@ class Tracker:
         self._active:  list[_KalmanTrack] = []
         self._lost:    list[_KalmanTrack] = []
 
-    def _new_track(self, class_name: str, bbox: list[float]) -> _KalmanTrack:
-        t = _KalmanTrack.from_bbox(self._next_id, class_name, bbox)
+    def _new_track(self, det: Detection) -> _KalmanTrack:
+        t = _KalmanTrack.from_bbox(
+            self._next_id,
+            det.class_name,
+            det.bbox,
+            det.confidence,
+        )
         self._next_id += 1
         return t
 
@@ -320,7 +389,10 @@ class Tracker:
         )
 
         for det_idx, trk_idx in matches1:
-            self._active[trk_idx].update(high_dets[det_idx].bbox)
+            self._active[trk_idx].update(
+                high_dets[det_idx].bbox,
+                high_dets[det_idx].confidence,
+            )
 
         # Unmatched active tracks → move to lost
         newly_lost: list[_KalmanTrack] = []
@@ -339,7 +411,10 @@ class Tracker:
             )
             revived_lost_indices: set[int] = set()
             for det_idx, trk_idx in matches2:
-                self._lost[trk_idx].update(low_dets[det_idx].bbox)
+                self._lost[trk_idx].update(
+                    low_dets[det_idx].bbox,
+                    low_dets[det_idx].confidence,
+                )
                 self._lost[trk_idx].is_lost = False
                 self._lost[trk_idx].lost_age = 0
                 self._active.append(self._lost[trk_idx])
@@ -349,10 +424,7 @@ class Tracker:
 
         # ── Spawn new tracks for unmatched high-conf dets ─────────────────────
         for det_idx in unmatched_high:
-            new_trk = self._new_track(
-                high_dets[det_idx].class_name,
-                high_dets[det_idx].bbox,
-            )
+            new_trk = self._new_track(high_dets[det_idx])
             self._active.append(new_trk)
 
         # ── Prune expired lost tracks ──────────────────────────────────────────
@@ -376,15 +448,17 @@ class Tracker:
                 track_id=-1,
             ))
 
-        # Confirmed + tentative tracked detections
-        # Build a bbox→track_id lookup from active tracks that were just updated
-        # (time_since_last_match == 0 means updated this frame)
+        # Confirmed + tentative tracked detections. Keep very recent predicted
+        # boxes for confirmed tracks so annotated videos do not flicker when a
+        # detector misses a frame.
         for trk in self._active:
-            if trk.time_since_last_match == 0:
+            if trk.time_since_last_match == 0 or (trk.is_confirmed and trk.time_since_last_match <= 3):
+                bbox = trk.last_bbox if trk.time_since_last_match == 0 else trk.predicted_bbox()
+                decay = max(0.25, 1.0 - 0.2 * trk.time_since_last_match)
                 output.append(TrackedDetection(
                     class_name=trk.class_name,
-                    confidence=0.0,          # use track's smoothed position
-                    bbox=trk.last_bbox,
+                    confidence=trk.confidence * decay,
+                    bbox=bbox,
                     track_id=trk.track_id,
                 ))
 
@@ -398,3 +472,108 @@ class Tracker:
             self._next_id,
         )
         return output
+
+
+# Classes that benefit from post-hoc stitching (fast movers that fragment).
+# Cars/trucks are large and slow — their boxes always overlap, so they don't
+# fragment. Stitching them causes false trajectory merges that look erratic.
+STITCH_CLASSES: set[str] = {"motorcycle", "bicycle", "auto_rickshaw"}
+
+
+def stitch_track_fragments(
+    track_results: dict,
+    class_name_for_id: dict,
+) -> dict:
+    """
+    Post-hoc track-fragment stitcher.
+
+    Merges track IDs that very likely represent the same physical object
+    but received different IDs because of gaps between sampled frames.
+
+    Algorithm
+    ---------
+    For every pair (A, B) of track IDs with the same vehicle class where:
+      - Track A's last timestamp + STITCH_MAX_GAP >= Track B's first timestamp
+      - Track B starts after Track A ends (no temporal overlap)
+      - The centroid of A's last bbox and B's first bbox are within
+        STITCH_MAX_DIST_PX pixels
+    → Remap all occurrences of B's track_id to A's track_id.
+
+    Returns a dict mapping old_track_id → canonical_track_id.
+    IDs not merged map to themselves.
+
+    Parameters
+    ----------
+    track_results : dict[float, list[TrackedDetection]]
+        Keyed by timestamp; value is the list returned by Tracker.update().
+    class_name_for_id : dict[int, str]
+        Maps each track_id to its vehicle class.
+    """
+    from collections import defaultdict
+
+    # Build timeline: track_id → sorted list of (timestamp, bbox)
+    timeline: dict[int, list[tuple[float, list[float]]]] = defaultdict(list)
+    for ts, detections in track_results.items():
+        for det in detections:
+            if det.track_id > 0:
+                timeline[det.track_id].append((ts, list(det.bbox)))
+    for tid in timeline:
+        timeline[tid].sort(key=lambda x: x[0])
+
+    def _centroid(bbox: list[float]) -> tuple[float, float]:
+        return (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+
+    # Candidate track end/start info sorted by first-seen timestamp
+    track_ids = sorted(timeline.keys(), key=lambda t: timeline[t][0][0])
+
+    # Union-Find for merge grouping
+    parent: dict[int, int] = {tid: tid for tid in track_ids}
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            # Smaller ID wins as canonical
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    for i, tid_a in enumerate(track_ids):
+        last_ts_a, last_bbox_a = timeline[tid_a][-1]
+        cx_a, cy_a = _centroid(last_bbox_a)
+        class_a = class_name_for_id.get(tid_a, "")
+
+        # Only stitch fast two-wheelers that actually fragment.
+        # Cars/trucks are stable; stitching them merges different vehicles
+        # into one trajectory and creates false erratic-driving signals.
+        if class_a not in STITCH_CLASSES:
+            continue
+
+        for tid_b in track_ids[i + 1:]:
+            first_ts_b, first_bbox_b = timeline[tid_b][0]
+            class_b = class_name_for_id.get(tid_b, "")
+
+            # Must be same class and temporal ordering A → B
+            if class_a != class_b or first_ts_b <= last_ts_a:
+                continue
+            # Temporal gap must be small
+            if (first_ts_b - last_ts_a) > STITCH_MAX_GAP:
+                continue
+            # Spatial proximity check
+            cx_b, cy_b = _centroid(first_bbox_b)
+            dist = ((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2) ** 0.5
+            if dist <= STITCH_MAX_DIST_PX:
+                _union(tid_a, tid_b)
+                logger.info(
+                    "Track stitcher: merged track %d → %d (class=%s gap=%.2fs dist=%.1fpx)",
+                    tid_b, tid_a, class_a, first_ts_b - last_ts_a, dist,
+                )
+
+    # Build canonical map: old_id → canonical_id
+    return {tid: _find(tid) for tid in track_ids}

@@ -41,10 +41,18 @@ logger = logging.getLogger(__name__)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
-IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.05   # IoU overlap (lowered — dashcam angle gives small overlap)
+IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.08   # IoU overlap — tightened to reduce pedestrian false positives
 IOU_HELMET_HEAD_THRESHOLD:      float = 0.10   # IoU for helmet-to-head overlap
 HEAD_FRACTION:                  float = 0.30   # top 30% of person bbox = head region
 TRIPLE_RIDING_THRESHOLD:        int   = 3
+
+# Minimum person box height in pixels to be counted as a rider.
+# Persons smaller than this are too far away / background — not on the motorcycle.
+MIN_PERSON_HEIGHT_FOR_RIDER_PX: int = 45
+
+# Minimum person box height to reliably evaluate helmet status.
+# Below this, the head region is only ~15px tall — helmet models are unreliable.
+MIN_PERSON_HEIGHT_FOR_HELMET_PX: int = 55
 
 # Proximity fallback: if person centroid is within this fraction of moto bbox height,
 # count them as a rider even when IoU is low (rear-camera / dashcam angle)
@@ -56,15 +64,13 @@ RIDER_PROXIMITY_FRACTION: float = 1.5
 # Checks that apply to ALL vehicle classes:
 #   plate/OCR, phone usage, erratic driving, signal violation
 
-TWO_WHEELER_CLASSES: frozenset = frozenset({"motorcycle", "bicycle"})
+from pipeline.vehicle_class_gate import (
+    is_two_wheeler,
+    TWO_WHEELER_CLASSES,
+)
 FOUR_WHEELER_CLASSES: frozenset = frozenset({
     "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle",
 })
-
-
-def is_two_wheeler(class_name: str) -> bool:
-    """True iff class_name is a two-wheeler (motorcycle/bicycle)."""
-    return class_name.lower() in TWO_WHEELER_CLASSES
 
 
 def is_four_wheeler(class_name: str) -> bool:
@@ -112,6 +118,28 @@ def _iou(boxA: List[float], boxB: List[float]) -> float:
 def _head_box(person_bbox: List[float]) -> List[float]:
     x1, y1, x2, y2 = person_bbox
     return [x1, y1, x2, y1 + (y2 - y1) * HEAD_FRACTION]
+
+
+def _resolve_contested_rider(
+    person_bbox: List[float],
+    moto_a_bbox: List[float],
+    moto_b_bbox: List[float],
+    idx_a: int,
+    idx_b: int,
+) -> int:
+    """
+    Ported from DashCop inference/instance_funcs.py (motor2_rider_iou_tracks pattern).
+
+    When a rider overlaps two motorcycles with similar scores, explicitly compute
+    full IoU between the rider and each motorcycle, then assign the rider to the
+    motorcycle with the HIGHER IoU.  This prevents the common dashcam error where
+    a pedestrian walking between two parked bikes gets double-counted.
+
+    Returns: the winning motorcycle index (idx_a or idx_b).
+    """
+    iou_a = _iou(person_bbox, moto_a_bbox)
+    iou_b = _iou(person_bbox, moto_b_bbox)
+    return idx_a if iou_a >= iou_b else idx_b
 
 
 def _dominant_vehicle_class(fd: FrameDetections) -> str:
@@ -174,10 +202,18 @@ def apply_rules(
     rider_count = 0
 
     if motorcycles:  # ← guard: only evaluate rider/helmet on frames with motorcycles
-        for person in persons:
+        # Track the current assignment: person_idx → moto_idx
+        # Allows contested-rider re-resolution (DashCop pattern)
+        person_to_moto: dict[int, int] = {}   # person list index → moto index
+
+        for p_idx, person in enumerate(persons):
             px1, py1, px2, py2 = person.bbox
             px_c = (px1 + px2) / 2.0
             ph = py2 - py1
+
+            # Guard 1: person too small → background pedestrian, not a rider
+            if ph < MIN_PERSON_HEIGHT_FOR_RIDER_PX:
+                continue
 
             best_moto_idx: Optional[int] = None
             best_overlap_score: float = 0.0
@@ -187,22 +223,31 @@ def apply_rules(
                 mw = mx2 - mx1
                 mh = my2 - my1
 
-                # 1. Horizontal containment: person center within motorcycle width (+15% margin)
-                h_margin = mw * 0.15
+                # 1. Horizontal containment: person center within motorcycle width (+10% margin)
+                #    Reduced from 15% to reduce pedestrians walking beside the road.
+                h_margin = mw * 0.10
                 if not (mx1 - h_margin <= px_c <= mx2 + h_margin):
                     continue
 
-                # 2. Vertical seating: person's bottom must overlap motorcycle body
+                # 2. Feet placement: person's bottom (py2) must be within the motorcycle's
+                #    vertical span — between my1 (top) and my2 + 0.3*mh (just below).
+                #    This requires the person to be physically on/above the bike seat,
+                #    not a background pedestrian behind the bike at a different depth.
+                if not (my1 - mh * 0.3 <= py2 <= my2 + mh * 0.3):
+                    continue
+
+                # 3. Vertical seating: person's bottom must overlap motorcycle body
                 v_overlap = max(0.0, min(py2, my2) - max(py1, my1))
                 if v_overlap <= 0:
                     continue
 
-                # 3. Person cannot be completely below or absurdly above motorcycle
+                # 4. Person cannot be completely below or absurdly above motorcycle
                 if py2 < my1 or py1 > my2:
                     continue
 
-                # 4. Relative scale sanity: rider height ~ 0.35x–2.2x motorcycle height
-                if mh > 0 and not (0.35 <= ph / mh <= 2.2):
+                # 5. Relative scale sanity: tightened from 0.35–2.2 to 0.50–2.0
+                #    Prevents very small/large scale mismatches (different depths)
+                if mh > 0 and not (0.50 <= ph / mh <= 2.0):
                     continue
 
                 overlap_score = v_overlap / max(1.0, ph)
@@ -210,10 +255,33 @@ def apply_rules(
                     best_overlap_score = overlap_score
                     best_moto_idx = m_idx
 
-            if best_moto_idx is not None:
+            if best_moto_idx is None:
+                continue
+
+            # ── Contested-rider resolution (DashCop motor2_rider_iou_tracks) ──
+            # If this person was already assigned to a DIFFERENT motorcycle,
+            # run the explicit IoU tie-breaker to decide the true owner.
+            if p_idx in person_to_moto:
+                prev_moto_idx = person_to_moto[p_idx]
+                if prev_moto_idx != best_moto_idx:
+                    winner_idx = _resolve_contested_rider(
+                        person.bbox,
+                        motorcycles[prev_moto_idx].bbox,
+                        motorcycles[best_moto_idx].bbox,
+                        prev_moto_idx,
+                        best_moto_idx,
+                    )
+                    # Remove person from the losing motorcycle's roster
+                    loser_idx = best_moto_idx if winner_idx == prev_moto_idx else prev_moto_idx
+                    if person in moto_to_riders[loser_idx]:
+                        moto_to_riders[loser_idx].remove(person)
+                    best_moto_idx = winner_idx
+
+            person_to_moto[p_idx] = best_moto_idx
+            if person not in moto_to_riders[best_moto_idx]:
                 moto_to_riders[best_moto_idx].append(person)
-                if person not in all_assigned_riders:
-                    all_assigned_riders.append(person)
+            if person not in all_assigned_riders:
+                all_assigned_riders.append(person)
 
         # Max riders on ANY SINGLE motorcycle in this frame
         max_riders_on_single_moto = max(
@@ -229,13 +297,31 @@ def apply_rules(
     # ── Helmet association (two-wheeler only, via guard above) ────────────────
     helmet_calls: List[HelmetStatus] = []
     for rider in all_assigned_riders:  # empty list if no motorcycles → skipped entirely
+        ph_px = rider.bbox[3] - rider.bbox[1]   # pixel height of this rider
+
+        # Guard: person box too small → too far from camera to evaluate helmet reliably.
+        # At < 55px tall, the head region is only ~16px — helmet model outputs at this
+        # resolution are unreliable and almost always produce false "no_helmet" calls.
+        # Mark as "unclear" (benefit of the doubt) rather than auto-flagging.
+        if ph_px < MIN_PERSON_HEIGHT_FOR_HELMET_PX:
+            helmet_calls.append("unclear")
+            logger.debug(
+                "Helmet check skipped for small rider (height=%.0fpx < %dpx threshold)",
+                ph_px, MIN_PERSON_HEIGHT_FOR_HELMET_PX,
+            )
+            continue
+
         head = _head_box(rider.bbox)
         if any(_iou(head, h.bbox) >= IOU_HELMET_HEAD_THRESHOLD for h in helmets):
             call: HelmetStatus = "helmet"
         elif any(_iou(head, nh.bbox) >= IOU_HELMET_HEAD_THRESHOLD for nh in no_helmets):
             call = "no_helmet"
         else:
-            call = "no_helmet" if rider.confidence >= 0.5 else "unclear"
+            # No helmet/no_helmet detection overlaps the head region.
+            # Default to "no_helmet" only for high-confidence riders (rider is clearly
+            # visible and close enough that we'd expect to see a helmet if there was one).
+            # For medium-confidence riders, "unclear" is safer.
+            call = "no_helmet" if rider.confidence >= 0.65 else "unclear"
         helmet_calls.append(call)
 
     if not helmet_calls:
@@ -243,7 +329,10 @@ def apply_rules(
         helmet_status: HelmetStatus = "unclear"
     else:
         counts = {s: helmet_calls.count(s) for s in ("helmet", "no_helmet", "unclear")}
-        helmet_status = max(counts, key=lambda k: (counts[k], k == "no_helmet"))
+        # Tiebreak update: when "unclear" and "no_helmet" tie, "unclear" wins.
+        # Rationale: we should not flag a person for a violation we cannot confirm.
+        helmet_status = max(counts, key=lambda k: (counts[k], k == "helmet", k == "unclear"))
+
 
     # ── Violations ────────────────────────────────────────────────────────────
     violations: List[str] = []

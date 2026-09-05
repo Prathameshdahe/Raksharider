@@ -76,6 +76,8 @@ PLATE_CLASSES: dict[str, str] = {
     "license_plate": "license_plate",
     "plate":         "license_plate",
 }
+PLATE_TARGET_CLASSES = PLATE_CLASSES
+
 
 # classifiacation.pt classes → unified internal labels
 VEHICLE_CLASSES: dict[str, str] = {
@@ -189,6 +191,64 @@ def _infer(model, rgb: np.ndarray, class_map: dict[str, str],
     return dets
 
 
+# ── Deduplication ────────────────────────────────────────────────────────────
+
+def _dedup_detections(dets: list[Detection], iou_threshold: float = 0.70) -> list[Detection]:
+    """
+    Remove duplicate detections of the SAME class whose IoU exceeds iou_threshold.
+
+    Ported from DashCop inference/instance_funcs.py remove_duplicate_masks(),
+    adapted to bounding boxes instead of pixel masks.
+
+    Rationale: when two models (e.g. COCO + helmet model) both fire on the
+    same physical person, the merged list contains two 'person' boxes nearly
+    identical in position.  Keeping both inflates rider_count and can trigger
+    false triple-riding verdicts.
+
+    Strategy: for each overlapping pair of same-class boxes, keep the one
+    with HIGHER confidence and discard the other.  This is conservative
+    (threshold = 0.70) so genuinely adjacent detections are never merged.
+    """
+    if len(dets) <= 1:
+        return dets
+
+    keep = [True] * len(dets)
+    for i in range(len(dets)):
+        if not keep[i]:
+            continue
+        for j in range(i + 1, len(dets)):
+            if not keep[j]:
+                continue
+            if dets[i].class_name != dets[j].class_name:
+                continue
+            if _bbox_iou(dets[i].bbox, dets[j].bbox) > iou_threshold:
+                # Keep the higher-confidence detection
+                if dets[i].confidence >= dets[j].confidence:
+                    keep[j] = False
+                else:
+                    keep[i] = False
+                    break   # i is gone, move to next i
+
+    kept = [d for d, k in zip(dets, keep) if k]
+    removed = len(dets) - len(kept)
+    if removed > 0:
+        logger.debug("Dedup removed %d duplicate detection(s) (IoU>%.2f)", removed, iou_threshold)
+    return kept
+
+
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    """Standard IoU between two [x1,y1,x2,y2] boxes."""
+    ix1 = max(a[0], b[0]);  iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]);  iy2 = min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    area_a = max(0.0, a[2]-a[0]) * max(0.0, a[3]-a[1])
+    area_b = max(0.0, b[2]-b[0]) * max(0.0, b[3]-b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def detect_frame(frame_image: np.ndarray, timestamp: float = 0.0) -> FrameDetections:
@@ -237,11 +297,18 @@ def detect_frame(frame_image: np.ndarray, timestamp: float = 0.0) -> FrameDetect
         fd.detections.extend(vehicle_dets)
 
     logger.debug(
-        "Frame %.3fs → %d detections: %s",
+        "Frame %.3fs → %d detections (after dedup): %s",
         timestamp,
         len(fd.detections),
         [(d.class_name, f"{d.confidence:.2f}") for d in fd.detections],
     )
+
+    # ── Deduplication (DashCop remove_duplicate_masks pattern) ────────────────
+    # Remove same-class boxes with IoU > 0.70. Prevents double-counting when
+    # two models fire on the same physical object (e.g. COCO + helmet model
+    # both detecting the same person).
+    fd.detections = _dedup_detections(fd.detections, iou_threshold=0.70)
+
     return fd
 
 

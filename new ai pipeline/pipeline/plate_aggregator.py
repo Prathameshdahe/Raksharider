@@ -48,8 +48,14 @@ from pipeline.ocr import (
     _get_reader,
     _crop_bbox,
 )
+from pipeline.plate_crop_enhancer import enhance_plate_crop
 
 logger = logging.getLogger(__name__)
+
+MIN_STRONG_PLATE_CONFIDENCE = 0.60
+MIN_STRONG_PLATE_AGREEMENT = 0.67
+MIN_STRONG_VALID_READS = 2
+MAX_CANDIDATES_PER_TRACK = 5
 
 # ── Tier-2: PaddleOCR (optional) ─────────────────────────────────────────────
 _paddle_reader = None
@@ -63,8 +69,8 @@ def _get_paddle_reader():
             from paddleocr import PaddleOCR
             _paddle_reader = PaddleOCR(lang="en", show_log=False, use_angle_cls=True)
             logger.info("PaddleOCR reader ready.")
-        except ImportError:
-            logger.info("PaddleOCR not installed — Tier 2 disabled. pip install paddleocr")
+        except Exception as exc:
+            logger.info("PaddleOCR unavailable — Tier 2 disabled. Install/fix paddleocr to enable it. (%s)", exc)
             _paddle_reader = False  # sentinel: tried, not available
     return _paddle_reader if _paddle_reader is not False else None
 
@@ -80,6 +86,19 @@ class RawOCRRead:
     confidence: float
     is_valid: bool         # matches Indian plate regex
     tier: str              # 'easyocr' | 'paddleocr' | 'vlm'
+    source: str = "plate_detector"
+
+
+@dataclass
+class PlateCandidate:
+    """Best crop candidate retained for a track for later OCR escalation."""
+    track_id: int
+    frame_bgr: np.ndarray
+    plate_bbox: List[float]
+    timestamp: float
+    frame_index: int
+    detector_confidence: float
+    source: str
 
 
 @dataclass
@@ -93,6 +112,7 @@ class PlateResolution:
     valid_reads: int
     is_validated: bool           # True if plate_text passes Indian regex
     winning_tier: str            # which tier produced the winner
+    needs_review: bool = False   # True if weak/ambiguous even after escalation
 
 
 class PlateAggregator:
@@ -105,6 +125,36 @@ class PlateAggregator:
     def __init__(self) -> None:
         # track_id -> list of raw reads
         self._reads: Dict[int, List[RawOCRRead]] = defaultdict(list)
+        self._candidates: Dict[int, List[PlateCandidate]] = defaultdict(list)
+
+    def add_candidate(
+        self,
+        track_id: int,
+        frame_bgr: np.ndarray,
+        plate_bbox: List[float],
+        timestamp: float,
+        frame_index: int = 0,
+        detector_confidence: float = 0.0,
+        source: str = "plate_detector",
+    ) -> None:
+        """Retain the best crop candidates for a track so stronger OCR can retry them."""
+        crop = _crop_bbox(frame_bgr, plate_bbox)
+        if crop is None or crop.size == 0:
+            return
+
+        candidate = PlateCandidate(
+            track_id=track_id,
+            frame_bgr=frame_bgr.copy(),
+            plate_bbox=list(plate_bbox),
+            timestamp=timestamp,
+            frame_index=frame_index,
+            detector_confidence=detector_confidence,
+            source=source,
+        )
+        candidates = self._candidates[track_id]
+        candidates.append(candidate)
+        candidates.sort(key=lambda c: c.detector_confidence, reverse=True)
+        del candidates[MAX_CANDIDATES_PER_TRACK:]
 
     def add_raw_read(
         self,
@@ -113,42 +163,103 @@ class PlateAggregator:
         plate_bbox: List[float],
         timestamp: float,
         frame_index: int = 0,
+        detector_confidence: float = 1.0,
     ) -> Optional[RawOCRRead]:
         """
         Run Tier-1 (EasyOCR) on the plate crop and record the result.
         Returns the raw read, or None if crop/OCR failed.
+
+        Step 5 (plate_crop_enhancer): the OCR-facing crop is padded and
+        upscaled via enhance_plate_crop() before being passed to EasyOCR.
+        The candidate stored for Tier-2/3 escalation still uses the raw
+        frame + original bbox (so PaddleOCR / Gemini can re-crop as needed).
         """
-        crop = _crop_bbox(frame_bgr, plate_bbox)
-        if crop is None:
+        # Zoom-then-read: pad 15%, upscale to 128px height
+        ocr_crop = enhance_plate_crop(frame_bgr, plate_bbox)
+        if ocr_crop is None:
+            # Fall back to raw crop if enhancer fails (e.g. bbox entirely OOB)
+            ocr_crop = _crop_bbox(frame_bgr, plate_bbox)
+        if ocr_crop is None:
             return None
 
-        raw = _easyocr_read(crop, timestamp, frame_index)
+        # Store raw (unenhanced) candidate for Tier-2/3 escalation
+        self.add_candidate(
+            track_id=track_id,
+            frame_bgr=frame_bgr,
+            plate_bbox=plate_bbox,
+            timestamp=timestamp,
+            frame_index=frame_index,
+            detector_confidence=detector_confidence,
+            source="plate_detector",
+        )
+
+        raw = _easyocr_read(ocr_crop, timestamp, frame_index, source="plate_detector")
         if raw is not None:
             self._reads[track_id].append(raw)
         return raw
+
+    def add_vehicle_roi_candidate(
+        self,
+        track_id: int,
+        frame_bgr: np.ndarray,
+        vehicle_bbox: List[float],
+        vehicle_class: str,
+        vehicle_confidence: float,
+        timestamp: float,
+        frame_index: int = 0,
+    ) -> None:
+        """
+        Save likely plate sub-regions from a tracked vehicle when the plate model
+        misses. OCR is not run immediately; these are fallback candidates only.
+        """
+        if vehicle_confidence < 0.55 or track_id < 0:
+            return
+        for bbox, score in _candidate_vehicle_plate_rois(frame_bgr, vehicle_bbox, vehicle_class):
+            self.add_candidate(
+                track_id=track_id,
+                frame_bgr=frame_bgr,
+                plate_bbox=bbox,
+                timestamp=timestamp,
+                frame_index=frame_index,
+                detector_confidence=vehicle_confidence * score,
+                source="vehicle_roi",
+            )
 
     def resolve_track(self, track_id: int) -> PlateResolution:
         """
         Resolve a single track's accumulated reads into one final answer.
 
-        Priority:
-          1. Most frequent regex-valid read (majority vote)
-          2. Highest-confidence read among valid-format reads
-          3. Highest-confidence any read (valid format preferred)
+        Two consensus strategies are tried:
+          1. Exact-string majority vote — the most frequent whole read.
+          2. Character-position majority vote — align same-length reads and
+             vote per character. This recovers a plate that no single frame
+             ever read correctly end-to-end: a '4' that one frame misreads
+             as '1' (or an 'M' misread as 'H') gets outvoted by the frames
+             that read that position correctly, even though every read
+             differs from the others somewhere else. Exact-string voting
+             throws all of that away the moment any two reads aren't
+             byte-identical.
+
+        Position voting is only trusted when every position has a clear,
+        untied plurality winner (see _positional_consensus) — a tie means
+        the reads disagree too much to be noisy variants of one plate (e.g.
+        two different vehicles' reads landed on the same track), so we fall
+        back to exact-string voting rather than Frankenstein two plates
+        together.
         """
         reads = self._reads.get(track_id, [])
         if not reads:
             return PlateResolution(
                 track_id=track_id, plate_text=None, confidence=0.0,
                 agreement=0.0, total_reads=0, valid_reads=0,
-                is_validated=False, winning_tier="none",
+                is_validated=False, winning_tier="none", needs_review=True,
             )
 
         valid_reads = [r for r in reads if r.is_valid]
         total = len(reads)
 
         if valid_reads:
-            # Majority vote among valid reads
+            # Exact-string majority vote (baseline)
             counter: Dict[str, int] = {}
             tier_map: Dict[str, str] = {}
             conf_map: Dict[str, float] = {}
@@ -158,22 +269,49 @@ class PlateAggregator:
                     conf_map[r.text] = r.confidence
                     tier_map[r.text] = r.tier
 
-            winner = max(counter, key=lambda k: (counter[k], conf_map[k]))
-            agreement = counter[winner] / len(valid_reads)
+            exact_winner = max(counter, key=lambda k: (counter[k], conf_map[k]))
+            exact_agreement = counter[exact_winner] / len(valid_reads)
+
+            winner, agreement = exact_winner, exact_agreement
+            winning_conf, winning_tier = conf_map[exact_winner], tier_map[exact_winner]
+
+            # Character-position majority vote, only among reads sharing the
+            # most common length (a real misread swaps a character, it
+            # doesn't usually add/drop one).
+            length_counts: Dict[int, int] = {}
+            for r in valid_reads:
+                length_counts[len(r.text)] = length_counts.get(len(r.text), 0) + 1
+            canonical_len = max(length_counts, key=lambda L: length_counts[L])
+            canonical_group = [r for r in valid_reads if len(r.text) == canonical_len]
+
+            consensus = _positional_consensus(canonical_group) if len(canonical_group) >= 2 else None
+            if consensus is not None:
+                composite, position_agreement = consensus
+                if is_valid_indian_plate(composite) and position_agreement > exact_agreement:
+                    winner = composite
+                    agreement = position_agreement
+                    winning_conf = max(r.confidence for r in canonical_group)
+                    winning_tier = max(canonical_group, key=lambda r: r.confidence).tier
+
             logger.info(
                 "Track %d: plate='%s' (%d/%d valid reads, agreement=%.0f%%, tier=%s)",
-                track_id, winner, counter[winner], len(valid_reads),
-                agreement * 100, tier_map[winner],
+                track_id, winner, counter.get(winner, 0), len(valid_reads),
+                agreement * 100, winning_tier,
             )
             return PlateResolution(
                 track_id=track_id,
                 plate_text=winner,
-                confidence=conf_map[winner],
+                confidence=winning_conf,
                 agreement=agreement,
                 total_reads=total,
                 valid_reads=len(valid_reads),
                 is_validated=True,
-                winning_tier=tier_map[winner],
+                winning_tier=winning_tier,
+                needs_review=bool(
+                    agreement < MIN_STRONG_PLATE_AGREEMENT
+                    or winning_conf < MIN_STRONG_PLATE_CONFIDENCE
+                    or len(valid_reads) < MIN_STRONG_VALID_READS
+                ),
             )
 
         # No valid reads — return best confidence read with flag
@@ -187,23 +325,52 @@ class PlateAggregator:
             valid_reads=0,
             is_validated=False,
             winning_tier=best.tier,
+            needs_review=True,
         )
 
     def resolve_all(self) -> Dict[int, PlateResolution]:
         """Resolve all tracks and return dict of track_id → PlateResolution."""
         return {tid: self.resolve_track(tid) for tid in self._reads}
 
-    def best_result(self, resolutions: Dict[int, PlateResolution]) -> Optional[PlateResolution]:
-        """Return the single best plate resolution across all tracks."""
+    def best_result(
+        self,
+        resolutions: Dict[int, PlateResolution],
+        preferred_track_ids: Optional[set] = None,
+    ) -> Optional[PlateResolution]:
+        """
+        Return the single best plate resolution.
+
+        When preferred_track_ids is given (the tracks matching the vehicle class
+        actually flagged for a violation), a validated plate on one of those
+        tracks wins over a higher-agreement read on an unrelated bystander
+        vehicle. Without this, the best-agreement plate anywhere in the clip can
+        belong to a car/truck passing through frame rather than the vehicle
+        being reported.
+        """
         if not resolutions:
             return None
-        # Prefer validated plates; among those, highest agreement × confidence
-        validated = [r for r in resolutions.values() if r.is_validated and r.plate_text]
-        if validated:
-            return max(validated, key=lambda r: r.agreement * r.confidence)
-        # Fallback: highest confidence among any result
-        all_res = [r for r in resolutions.values() if r.plate_text]
-        return max(all_res, key=lambda r: r.confidence) if all_res else None
+
+        def _best_among(pool: Dict[int, PlateResolution]) -> Optional[PlateResolution]:
+            validated = [r for r in pool.values() if r.is_validated and r.plate_text]
+            if validated:
+                return max(validated, key=lambda r: r.agreement * r.confidence)
+            all_res = [r for r in pool.values() if r.plate_text]
+            return max(all_res, key=lambda r: r.confidence) if all_res else None
+
+        if preferred_track_ids:
+            subject_pool = {tid: r for tid, r in resolutions.items() if tid in preferred_track_ids}
+            subject_best = _best_among(subject_pool)
+            if subject_best is not None:
+                return subject_best
+            # Subject tracks have no valid plate — report unreadable, never
+            # bleed a bystander vehicle's plate into the violation report.
+            logger.info(
+                "Plate: subject tracks %s have no valid OCR read — reporting unreadable.",
+                sorted(preferred_track_ids),
+            )
+            return None
+
+        return _best_among(resolutions)
 
     def escalate_to_paddle(
         self,
@@ -225,7 +392,7 @@ class PlateAggregator:
         if crop is None:
             return None
 
-        raw = _paddle_read(paddle, crop, timestamp, frame_index)
+        raw = _paddle_read(paddle, crop, timestamp, frame_index, source="plate_detector")
         if raw is not None:
             self._reads[track_id].append(raw)
             logger.info(
@@ -250,7 +417,7 @@ class PlateAggregator:
         if crop is None:
             return None
 
-        raw = _vlm_read(crop, timestamp, frame_index)
+        raw = _vlm_read(crop, timestamp, frame_index, source="plate_detector")
         if raw is not None:
             self._reads[track_id].append(raw)
             logger.info(
@@ -264,7 +431,91 @@ class PlateAggregator:
         return any(r.is_valid for r in self._reads.get(track_id, []))
 
     def track_ids(self) -> List[int]:
-        return list(self._reads.keys())
+        return sorted(set(self._reads.keys()) | set(self._candidates.keys()))
+
+    def raw_reads_by_track(self) -> Dict[int, List[str]]:
+        """Return dict of track_id -> list of raw OCR text reads."""
+        return {
+            tid: [r.text for r in reads if r.text]
+            for tid, reads in self._reads.items()
+        }
+
+    def merge_tracks(self, primary_id: int, fragment_id: int) -> None:
+        """Merge all raw OCR reads and crop candidates from fragment_id into primary_id."""
+        if fragment_id == primary_id:
+            return
+        if fragment_id in self._reads:
+            self._reads[primary_id].extend(self._reads.pop(fragment_id))
+        if fragment_id in self._candidates:
+            self._candidates[primary_id].extend(self._candidates.pop(fragment_id))
+            self._candidates[primary_id].sort(key=lambda c: c.detector_confidence, reverse=True)
+            del self._candidates[primary_id][MAX_CANDIDATES_PER_TRACK:]
+
+    def needs_escalation(self, track_id: int) -> bool:
+        """True when current reads are missing, weak, or internally ambiguous."""
+        return self.resolve_track(track_id).needs_review
+
+    def best_candidates(self, track_id: int, limit: int = 2) -> List[PlateCandidate]:
+        return list(self._candidates.get(track_id, []))[:limit]
+
+    def improve_track(self, track_id: int, use_vlm: bool = True) -> list[RawOCRRead]:
+        """
+        Improve weak tracks by retrying best crops with PaddleOCR, then VLM.
+        This does not wait for total failure; low-confidence or low-agreement
+        EasyOCR results are also escalated.
+        """
+        added: list[RawOCRRead] = []
+        if not self.needs_escalation(track_id):
+            return added
+
+        for cand in self.best_candidates(track_id, limit=1):
+            if cand.source != "vehicle_roi":
+                continue
+            if any(r.source == "vehicle_roi" for r in self._reads.get(track_id, [])):
+                continue
+            crop = _crop_bbox(cand.frame_bgr, cand.plate_bbox)
+            if crop is None:
+                continue
+            raw = _easyocr_read(
+                crop,
+                timestamp=cand.timestamp,
+                frame_index=cand.frame_index,
+                source="vehicle_roi",
+            )
+            if raw is not None:
+                self._reads[track_id].append(raw)
+                added.append(raw)
+            if not self.needs_escalation(track_id):
+                return added
+
+        for cand in self.best_candidates(track_id, limit=3):
+            raw = self.escalate_to_paddle(
+                track_id=track_id,
+                frame_bgr=cand.frame_bgr,
+                plate_bbox=cand.plate_bbox,
+                timestamp=cand.timestamp,
+                frame_index=cand.frame_index,
+            )
+            if raw is not None:
+                raw.source = cand.source
+                added.append(raw)
+            if not self.needs_escalation(track_id):
+                return added
+
+        if use_vlm and self.needs_escalation(track_id):
+            for cand in self.best_candidates(track_id, limit=1):
+                raw = self.escalate_to_vlm(
+                    track_id=track_id,
+                    frame_bgr=cand.frame_bgr,
+                    plate_bbox=cand.plate_bbox,
+                    timestamp=cand.timestamp,
+                    frame_index=cand.frame_index,
+                )
+                if raw is not None:
+                    raw.source = cand.source
+                    added.append(raw)
+                break
+        return added
 
 
 # ── OCR tier implementations ──────────────────────────────────────────────────
@@ -273,6 +524,7 @@ def _easyocr_read(
     crop: np.ndarray,
     timestamp: float,
     frame_index: int,
+    source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
     """Run EasyOCR (Tier 1) on a pre-cropped plate image."""
     ALLOWED_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -308,9 +560,8 @@ def _easyocr_read(
             is_valid=valid,
             tier="easyocr",
         )
-        if valid:
-            return candidate  # Accept immediately if valid
-        if best is None or candidate.confidence > best.confidence:
+        candidate.source = source
+        if best is None or _read_rank(candidate) > _read_rank(best):
             best = candidate
 
     return best
@@ -321,6 +572,7 @@ def _paddle_read(
     crop: np.ndarray,
     timestamp: float,
     frame_index: int,
+    source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
     """Run PaddleOCR (Tier 2) on a pre-cropped plate image.
 
@@ -332,6 +584,7 @@ def _paddle_read(
     if not variants:
         return None
 
+    best: Optional[RawOCRRead] = None
     for variant in variants:
         try:
             # PaddleOCR expects BGR or RGB numpy array
@@ -367,22 +620,26 @@ def _paddle_read(
 
         conf = max(scores)
         valid = is_valid_indian_plate(cleaned)
-        return RawOCRRead(
+        candidate = RawOCRRead(
             timestamp=timestamp,
             frame_index=frame_index,
             text=cleaned,
             confidence=conf,
             is_valid=valid,
             tier="paddleocr",
+            source=source,
         )
+        if best is None or _read_rank(candidate) > _read_rank(best):
+            best = candidate
 
-    return None
+    return best
 
 
 def _vlm_read(
     crop: np.ndarray,
     timestamp: float,
     frame_index: int,
+    source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
     """
     Run Gemini Vision (Tier 3) to read the license plate from a crop.
@@ -390,19 +647,19 @@ def _vlm_read(
     Only called when both EasyOCR and PaddleOCR produce no valid read.
     """
     try:
-        import base64
         import os
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return None
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        client = genai.Client(api_key=api_key)
+        model_name = os.getenv("GEMINI_VLM_MODEL", "gemini-2.0-flash")
 
-        _, buf = cv2.imencode(".jpg", crop)
-        b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+        _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        image_bytes = buf.tobytes()
 
         prompt = (
             "This is a cropped Indian vehicle license plate image. "
@@ -412,10 +669,13 @@ def _vlm_read(
             "no explanation. If unreadable, reply with UNREADABLE."
         )
 
-        response = model.generate_content([
-            {"mime_type": "image/jpeg", "data": b64},
-            prompt,
-        ])
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt,
+            ],
+        )
 
         raw = response.text.strip().upper()
         import re
@@ -433,6 +693,7 @@ def _vlm_read(
             confidence=0.85 if valid else 0.5,  # VLM reads are generally reliable
             is_valid=valid,
             tier="vlm",
+            source=source,
         )
 
     except Exception as exc:
@@ -440,35 +701,204 @@ def _vlm_read(
         return None
 
 
+def _positional_consensus(reads: List[RawOCRRead]) -> Optional[Tuple[str, float]]:
+    """
+    Character-position majority vote across same-length reads.
+
+    Returns (composite_string, avg_position_agreement), or None if any
+    position is tied (no clear plurality character) — a tie means the reads
+    aren't simply noisy variants of one plate (single-character misreads),
+    so the caller should fall back to exact-string voting instead of
+    combining characters from what may be two unrelated reads.
+    """
+    if not reads:
+        return None
+    length = len(reads[0].text)
+    if any(len(r.text) != length for r in reads) or length == 0:
+        return None
+
+    composite_chars: List[str] = []
+    agreements: List[float] = []
+    for pos in range(length):
+        counts: Dict[str, int] = {}
+        for r in reads:
+            ch = r.text[pos]
+            counts[ch] = counts.get(ch, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        top_char, top_n = ranked[0]
+        if len(ranked) > 1 and ranked[1][1] == top_n:
+            return None   # tied position — reads disagree too much to trust
+        composite_chars.append(top_char)
+        agreements.append(top_n / len(reads))
+
+    return "".join(composite_chars), sum(agreements) / length
+
+
+def _read_rank(read: RawOCRRead) -> tuple[int, float, int]:
+    """Sort key: valid plates first, then confidence, then plausible length."""
+    return (1 if read.is_valid else 0, read.confidence, min(len(read.text), 10))
+
+
+def _candidate_vehicle_plate_rois(
+    frame_bgr: np.ndarray,
+    vehicle_bbox: List[float],
+    vehicle_class: str,
+) -> list[tuple[List[float], float]]:
+    """
+    Conservative fallback plate boxes inside a vehicle bbox.
+    Used only when the dedicated plate detector has not produced a strong read.
+    """
+    h_img, w_img = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = vehicle_bbox
+    x1, y1 = max(0.0, x1), max(0.0, y1)
+    x2, y2 = min(float(w_img - 1), x2), min(float(h_img - 1), y2)
+    w = x2 - x1
+    h = y2 - y1
+    if w < 80 or h < 50:
+        return []
+
+    cls = vehicle_class.lower()
+    if cls in {"motorcycle", "bicycle"}:
+        rois = [
+            ([x1 + 0.25 * w, y1 + 0.58 * h, x1 + 0.82 * w, y1 + 0.90 * h], 0.75),
+            ([x1 + 0.10 * w, y1 + 0.62 * h, x1 + 0.70 * w, y1 + 0.94 * h], 0.55),
+        ]
+    else:
+        rois = [
+            ([x1 + 0.30 * w, y1 + 0.55 * h, x1 + 0.72 * w, y1 + 0.78 * h], 0.70),
+            ([x1 + 0.25 * w, y1 + 0.68 * h, x1 + 0.75 * w, y1 + 0.92 * h], 0.60),
+        ]
+
+    clipped: list[tuple[List[float], float]] = []
+    for bbox, score in rois:
+        bx1, by1, bx2, by2 = bbox
+        bx1, by1 = max(0.0, bx1), max(0.0, by1)
+        bx2, by2 = min(float(w_img - 1), bx2), min(float(h_img - 1), by2)
+        if bx2 > bx1 and by2 > by1:
+            clipped.append(([bx1, by1, bx2, by2], score))
+    return clipped
+
+
+
 # ── Utility: find nearest track_id to a plate detection ─────────────────────
+
+def _plate_vehicle_iou(plate: List[float], vehicle: List[float]) -> float:
+    """
+    IoU between a small plate box and a large vehicle box.
+    Since plate is always much smaller than the vehicle, we also compute
+    'plate containment ratio' — what fraction of the plate lies inside the vehicle.
+    We return the max of IoU and containment so a perfectly-contained plate
+    always scores high even when the vehicle box is much larger.
+    """
+    ix1 = max(plate[0], vehicle[0]);  iy1 = max(plate[1], vehicle[1])
+    ix2 = min(plate[2], vehicle[2]);  iy2 = min(plate[3], vehicle[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    plate_area   = max(1.0, (plate[2]   - plate[0])   * (plate[3]   - plate[1]))
+    vehicle_area = max(1.0, (vehicle[2] - vehicle[0]) * (vehicle[3] - vehicle[1]))
+    union        = plate_area + vehicle_area - inter
+    iou          = inter / union if union > 0 else 0.0
+    containment  = inter / plate_area          # fraction of plate inside vehicle
+    return max(iou, containment * 0.5)         # containment weighted down slightly
+
 
 def find_nearest_track_id(
     plate_bbox: List[float],
-    tracked_dets: list,  # list[TrackedDetection]
+    tracked_dets: list,           # list[TrackedDetection]
     max_dist_px: float = 300.0,
 ) -> Optional[int]:
     """
-    Match a plate detection to the nearest tracked vehicle by centroid distance.
-    Returns None if no tracked detection is within max_dist_px.
+    Match a plate detection to the correct tracked vehicle using a 3-tier strategy:
+
+    Tier A (strongest) — IoU / containment overlap:
+        Compute IoU + plate-containment score between the plate box and each
+        tracked vehicle box. The vehicle with the highest score (≥ 0.10) wins.
+        This correctly handles plates that are partially outside the vehicle box
+        due to detector jitter.
+
+    Tier B — centroid containment:
+        Plate centroid lies strictly inside a tracked vehicle box.
+        Among ties, the vehicle with the smallest area wins (most specific match).
+
+    Tier C (weakest) — proximity fallback:
+        Plate centroid is within 1.5 × vehicle_width of the vehicle centroid.
+        Only used when Tiers A and B both fail entirely.
+        Returns None if nothing qualifies (better unreadable than wrong).
+
+    Why IoU-first fixes "stuck on first car":
+        Centroid-distance-only: the car closest to the top of the frame (first to
+        appear) tends to be closest to plate centroids for many subsequent frames
+        because distance is measured from a static point.
+        IoU-first: each plate box must actually overlap with the correct vehicle
+        box, so a passing car's plate box cannot win against the plate that
+        physically sits on a different vehicle.
     """
     if not tracked_dets:
         return None
 
-    px_c = (plate_bbox[0] + plate_bbox[2]) / 2
-    py_c = (plate_bbox[1] + plate_bbox[3]) / 2
+    vehicle_classes = {
+        "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
+        "auto_rickshaw", "vehicle",
+    }
 
-    best_id: Optional[int] = None
-    best_dist = max_dist_px
+    px1, py1, px2, py2 = plate_bbox
+    px_c = (px1 + px2) / 2
+    py_c = (py1 + py2) / 2
+    p_w  = max(1.0, px2 - px1)
+
+    # Tier A
+    IOU_MIN = 0.10
+    best_iou_score: float = IOU_MIN
+    best_iou_id: Optional[int] = None
+
+    # Tier B
+    best_inside_area: Optional[float] = None
+    best_inside_id:   Optional[int]   = None
+
+    # Tier C
+    best_dist:    float          = float("inf")
+    best_dist_id: Optional[int]  = None
 
     for td in tracked_dets:
         if not hasattr(td, "bbox") or not hasattr(td, "track_id"):
             continue
-        bx1, by1, bx2, by2 = td.bbox
-        cx = (bx1 + bx2) / 2
-        cy = (by1 + by2) / 2
-        dist = ((px_c - cx) ** 2 + (py_c - cy) ** 2) ** 0.5
-        if dist < best_dist:
-            best_dist = dist
-            best_id = td.track_id
+        tid = getattr(td, "track_id", -1)
+        if tid < 0:
+            continue
+        if getattr(td, "class_name", "") not in vehicle_classes:
+            continue
 
-    return best_id
+        bx1, by1, bx2, by2 = td.bbox
+        v_w = max(1.0, bx2 - bx1)
+
+        # Tier A: IoU + containment
+        score = _plate_vehicle_iou(plate_bbox, [bx1, by1, bx2, by2])
+        if score > best_iou_score:
+            best_iou_score = score
+            best_iou_id    = tid
+
+        # Tier B: centroid inside vehicle box
+        if bx1 <= px_c <= bx2 and by1 <= py_c <= by2:
+            area = max(1.0, (bx2 - bx1) * (by2 - by1))
+            if best_inside_area is None or area < best_inside_area:
+                best_inside_area = area
+                best_inside_id   = tid
+            continue   # skip Tier C for this vehicle
+
+        # Tier C: proximity — only allowed within 1.5× vehicle width
+        cx   = (bx1 + bx2) / 2
+        cy   = (by1 + by2) / 2
+        dist = ((px_c - cx) ** 2 + (py_c - cy) ** 2) ** 0.5
+        local_max = max(max_dist_px, v_w * 1.5)
+        if dist < best_dist and dist < local_max:
+            best_dist    = dist
+            best_dist_id = tid
+
+    # Return best match in priority order
+    if best_iou_id is not None:
+        return best_iou_id
+    if best_inside_id is not None:
+        return best_inside_id
+    return best_dist_id   # None if nothing qualified
+

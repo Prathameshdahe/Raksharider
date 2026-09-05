@@ -127,45 +127,19 @@ def preprocess_plate_crop(crop: np.ndarray) -> List[np.ndarray]:
     return [sharpened, denoised, binary, adaptive, resized]
 
 
-def _try_candidates(chars: list, ambiguous_positions: list, regex_check=None) -> list:
-    """
-    For positions with ambiguous OCR characters (e.g. 'I' could be '1' or '4'),
-    try all combinations and return the first combination that produces a valid plate.
-    Falls back to the primary (first) substitution if none match.
-    """
-    if not ambiguous_positions:
-        return chars
-
-    # Build candidate lists for each ambiguous position
-    # e.g. 'I' at a digit position → try ['1', '4'] in order
-    import itertools
-    options = []
-    for pos, candidates in ambiguous_positions:
-        options.append([(pos, c) for c in candidates])
-
-    for combo in itertools.product(*options):
-        trial = chars[:]
-        for pos, char in combo:
-            trial[pos] = char
-        candidate_str = "".join(trial)
-        if regex_check and regex_check(candidate_str):
-            return trial
-
-    # No valid match found — return chars with primary substitution (first candidate)
-    result = chars[:]
-    for pos, candidates in ambiguous_positions:
-        result[pos] = candidates[0]
-    return result
-
-
 def _clean_and_disambiguate(text: str) -> str:
     """
     Clean OCR text, strip 'IND' HSRP watermark, and apply positional character
-    disambiguation using candidate-testing to avoid false fixes like 4→I→1.
+    correction (digit-shaped letters -> digits) for a single frame's read.
 
-    Key insight:
-    - 'I' in a digit slot could be '1' OR '4' (EasyOCR confuses 4 with I)
-    - Instead of blindly picking '1', try BOTH and pick whichever makes a valid plate
+    NOTE on '1' vs '4' (and letter/letter mixups like 'M' vs 'H'): the Indian
+    plate regex only checks character *class* (any digit / any letter), not
+    identity, so it cannot tell '1' from '4' or 'M' from 'H' — there is no
+    regex trick that resolves this within one frame. The '1' default below is
+    an arbitrary single-frame guess; the actual fix is cross-frame
+    character-position majority voting in plate_aggregator.py's
+    resolve_track(), which combines whichever character each frame happened
+    to read correctly at each position instead of trusting one frame's guess.
     """
     cleaned = re.sub(r"[^A-Z0-9]", "", text.upper())
 
@@ -183,18 +157,16 @@ def _clean_and_disambiguate(text: str) -> str:
             elif chars[i] == '5': chars[i] = 'S'
             elif chars[i] == '8': chars[i] = 'B'
 
-    # District code (chars 2, 3) must be digits — but 'I' is ambiguous (1 or 4)
+    # District code (chars 2, 3) must be digits — but 'I'/'L' are ambiguous (1 or 4)
     # Gate: position 2 is a digit OR a known letter-for-digit confusion (O, I, L, S, B, Z)
     DIGIT_CONFUSED_LETTERS = {'O', 'D', 'Q', 'I', 'L', 'Z', 'S', 'B'}
-    ambiguous: list = []
     if len(chars) >= 4 and (not chars[2].isalpha() or chars[2] in DIGIT_CONFUSED_LETTERS):
         for i in (2, 3):
             if i < len(chars):
                 if chars[i] in ('O', 'D', 'Q'):
                     chars[i] = '0'
                 elif chars[i] in ('I', 'L'):
-                    # Don't commit yet — try both '1' and '4'
-                    ambiguous.append((i, ['1', '4']))
+                    chars[i] = '1'   # arbitrary single-frame default — see docstring
                 elif chars[i] == 'Z':
                     chars[i] = '2'
                 elif chars[i] == 'S':
@@ -202,25 +174,19 @@ def _clean_and_disambiguate(text: str) -> str:
                 elif chars[i] == 'B':
                     chars[i] = '8'
 
-    # Last 4 digits must be digits — I is ambiguous (1 or 4).
-    # Try '4' FIRST for serial number positions: EasyOCR confuses '4' with 'I' more
-    # commonly than confusing '1' with 'I' in Indian plate fonts.
+    # Last 4 digits must be digits — 'I'/'L' are ambiguous (1 or 4) here too.
     if len(chars) >= 8:
         for i in range(len(chars) - 4, len(chars)):
             if chars[i] in ('O', 'D', 'Q'):
                 chars[i] = '0'
             elif chars[i] in ('I', 'L'):
-                ambiguous.append((i, ['4', '1']))  # try 4 first for serial digits
+                chars[i] = '1'   # arbitrary single-frame default — see docstring
             elif chars[i] == 'Z':
                 chars[i] = '2'
             elif chars[i] == 'S':
                 chars[i] = '5'
             elif chars[i] == 'B':
                 chars[i] = '8'
-
-    # Resolve ambiguities: try all combinations, prefer the one that makes a valid plate
-    if ambiguous:
-        chars = _try_candidates(chars, ambiguous, regex_check=is_valid_indian_plate)
 
     return "".join(chars)
 
