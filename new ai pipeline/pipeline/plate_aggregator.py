@@ -48,6 +48,7 @@ from pipeline.ocr import (
     _get_reader,
     _crop_bbox,
 )
+from pipeline.plate_crop_enhancer import enhance_plate_crop
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,8 @@ def _get_paddle_reader():
             from paddleocr import PaddleOCR
             _paddle_reader = PaddleOCR(lang="en", show_log=False, use_angle_cls=True)
             logger.info("PaddleOCR reader ready.")
-        except ImportError:
-            logger.info("PaddleOCR not installed — Tier 2 disabled. pip install paddleocr")
+        except Exception as exc:
+            logger.info("PaddleOCR unavailable — Tier 2 disabled. Install/fix paddleocr to enable it. (%s)", exc)
             _paddle_reader = False  # sentinel: tried, not available
     return _paddle_reader if _paddle_reader is not False else None
 
@@ -167,11 +168,21 @@ class PlateAggregator:
         """
         Run Tier-1 (EasyOCR) on the plate crop and record the result.
         Returns the raw read, or None if crop/OCR failed.
+
+        Step 5 (plate_crop_enhancer): the OCR-facing crop is padded and
+        upscaled via enhance_plate_crop() before being passed to EasyOCR.
+        The candidate stored for Tier-2/3 escalation still uses the raw
+        frame + original bbox (so PaddleOCR / Gemini can re-crop as needed).
         """
-        crop = _crop_bbox(frame_bgr, plate_bbox)
-        if crop is None:
+        # Zoom-then-read: pad 15%, upscale to 128px height
+        ocr_crop = enhance_plate_crop(frame_bgr, plate_bbox)
+        if ocr_crop is None:
+            # Fall back to raw crop if enhancer fails (e.g. bbox entirely OOB)
+            ocr_crop = _crop_bbox(frame_bgr, plate_bbox)
+        if ocr_crop is None:
             return None
 
+        # Store raw (unenhanced) candidate for Tier-2/3 escalation
         self.add_candidate(
             track_id=track_id,
             frame_bgr=frame_bgr,
@@ -182,7 +193,7 @@ class PlateAggregator:
             source="plate_detector",
         )
 
-        raw = _easyocr_read(crop, timestamp, frame_index, source="plate_detector")
+        raw = _easyocr_read(ocr_crop, timestamp, frame_index, source="plate_detector")
         if raw is not None:
             self._reads[track_id].append(raw)
         return raw
@@ -296,7 +307,7 @@ class PlateAggregator:
                 valid_reads=len(valid_reads),
                 is_validated=True,
                 winning_tier=winning_tier,
-                needs_review=(
+                needs_review=bool(
                     agreement < MIN_STRONG_PLATE_AGREEMENT
                     or winning_conf < MIN_STRONG_PLATE_CONFIDENCE
                     or len(valid_reads) < MIN_STRONG_VALID_READS
@@ -421,6 +432,24 @@ class PlateAggregator:
 
     def track_ids(self) -> List[int]:
         return sorted(set(self._reads.keys()) | set(self._candidates.keys()))
+
+    def raw_reads_by_track(self) -> Dict[int, List[str]]:
+        """Return dict of track_id -> list of raw OCR text reads."""
+        return {
+            tid: [r.text for r in reads if r.text]
+            for tid, reads in self._reads.items()
+        }
+
+    def merge_tracks(self, primary_id: int, fragment_id: int) -> None:
+        """Merge all raw OCR reads and crop candidates from fragment_id into primary_id."""
+        if fragment_id == primary_id:
+            return
+        if fragment_id in self._reads:
+            self._reads[primary_id].extend(self._reads.pop(fragment_id))
+        if fragment_id in self._candidates:
+            self._candidates[primary_id].extend(self._candidates.pop(fragment_id))
+            self._candidates[primary_id].sort(key=lambda c: c.detector_confidence, reverse=True)
+            del self._candidates[primary_id][MAX_CANDIDATES_PER_TRACK:]
 
     def needs_escalation(self, track_id: int) -> bool:
         """True when current reads are missing, weak, or internally ambiguous."""
@@ -618,19 +647,19 @@ def _vlm_read(
     Only called when both EasyOCR and PaddleOCR produce no valid read.
     """
     try:
-        import base64
         import os
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return None
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        client = genai.Client(api_key=api_key)
+        model_name = os.getenv("GEMINI_VLM_MODEL", "gemini-2.0-flash")
 
-        _, buf = cv2.imencode(".jpg", crop)
-        b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+        _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        image_bytes = buf.tobytes()
 
         prompt = (
             "This is a cropped Indian vehicle license plate image. "
@@ -640,10 +669,13 @@ def _vlm_read(
             "no explanation. If unreadable, reply with UNREADABLE."
         )
 
-        response = model.generate_content([
-            {"mime_type": "image/jpeg", "data": b64},
-            prompt,
-        ])
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt,
+            ],
+        )
 
         raw = response.text.strip().upper()
         import re
@@ -747,61 +779,126 @@ def _candidate_vehicle_plate_rois(
     return clipped
 
 
+
 # ── Utility: find nearest track_id to a plate detection ─────────────────────
+
+def _plate_vehicle_iou(plate: List[float], vehicle: List[float]) -> float:
+    """
+    IoU between a small plate box and a large vehicle box.
+    Since plate is always much smaller than the vehicle, we also compute
+    'plate containment ratio' — what fraction of the plate lies inside the vehicle.
+    We return the max of IoU and containment so a perfectly-contained plate
+    always scores high even when the vehicle box is much larger.
+    """
+    ix1 = max(plate[0], vehicle[0]);  iy1 = max(plate[1], vehicle[1])
+    ix2 = min(plate[2], vehicle[2]);  iy2 = min(plate[3], vehicle[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    plate_area   = max(1.0, (plate[2]   - plate[0])   * (plate[3]   - plate[1]))
+    vehicle_area = max(1.0, (vehicle[2] - vehicle[0]) * (vehicle[3] - vehicle[1]))
+    union        = plate_area + vehicle_area - inter
+    iou          = inter / union if union > 0 else 0.0
+    containment  = inter / plate_area          # fraction of plate inside vehicle
+    return max(iou, containment * 0.5)         # containment weighted down slightly
+
 
 def find_nearest_track_id(
     plate_bbox: List[float],
-    tracked_dets: list,  # list[TrackedDetection]
+    tracked_dets: list,           # list[TrackedDetection]
     max_dist_px: float = 300.0,
 ) -> Optional[int]:
     """
-    Match a plate detection to the nearest tracked vehicle by centroid distance.
-    Returns None if no tracked detection is within max_dist_px.
+    Match a plate detection to the correct tracked vehicle using a 3-tier strategy:
+
+    Tier A (strongest) — IoU / containment overlap:
+        Compute IoU + plate-containment score between the plate box and each
+        tracked vehicle box. The vehicle with the highest score (≥ 0.10) wins.
+        This correctly handles plates that are partially outside the vehicle box
+        due to detector jitter.
+
+    Tier B — centroid containment:
+        Plate centroid lies strictly inside a tracked vehicle box.
+        Among ties, the vehicle with the smallest area wins (most specific match).
+
+    Tier C (weakest) — proximity fallback:
+        Plate centroid is within 1.5 × vehicle_width of the vehicle centroid.
+        Only used when Tiers A and B both fail entirely.
+        Returns None if nothing qualifies (better unreadable than wrong).
+
+    Why IoU-first fixes "stuck on first car":
+        Centroid-distance-only: the car closest to the top of the frame (first to
+        appear) tends to be closest to plate centroids for many subsequent frames
+        because distance is measured from a static point.
+        IoU-first: each plate box must actually overlap with the correct vehicle
+        box, so a passing car's plate box cannot win against the plate that
+        physically sits on a different vehicle.
     """
     if not tracked_dets:
         return None
-
-    px_c = (plate_bbox[0] + plate_bbox[2]) / 2
-    py_c = (plate_bbox[1] + plate_bbox[3]) / 2
 
     vehicle_classes = {
         "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
         "auto_rickshaw", "vehicle",
     }
-    p_w = max(1.0, plate_bbox[2] - plate_bbox[0])
-    p_h = max(1.0, plate_bbox[3] - plate_bbox[1])
-    adaptive_max_dist = max(max_dist_px, p_w * 6.0, p_h * 8.0)
 
-    best_id: Optional[int] = None
+    px1, py1, px2, py2 = plate_bbox
+    px_c = (px1 + px2) / 2
+    py_c = (py1 + py2) / 2
+    p_w  = max(1.0, px2 - px1)
+
+    # Tier A
+    IOU_MIN = 0.10
+    best_iou_score: float = IOU_MIN
+    best_iou_id: Optional[int] = None
+
+    # Tier B
     best_inside_area: Optional[float] = None
-    best_dist = adaptive_max_dist
+    best_inside_id:   Optional[int]   = None
+
+    # Tier C
+    best_dist:    float          = float("inf")
+    best_dist_id: Optional[int]  = None
 
     for td in tracked_dets:
         if not hasattr(td, "bbox") or not hasattr(td, "track_id"):
             continue
-        if getattr(td, "track_id", -1) < 0:
+        tid = getattr(td, "track_id", -1)
+        if tid < 0:
             continue
         if getattr(td, "class_name", "") not in vehicle_classes:
             continue
 
         bx1, by1, bx2, by2 = td.bbox
+        v_w = max(1.0, bx2 - bx1)
 
-        # Strong match: plate centroid lies inside a tracked vehicle box.
+        # Tier A: IoU + containment
+        score = _plate_vehicle_iou(plate_bbox, [bx1, by1, bx2, by2])
+        if score > best_iou_score:
+            best_iou_score = score
+            best_iou_id    = tid
+
+        # Tier B: centroid inside vehicle box
         if bx1 <= px_c <= bx2 and by1 <= py_c <= by2:
             area = max(1.0, (bx2 - bx1) * (by2 - by1))
             if best_inside_area is None or area < best_inside_area:
                 best_inside_area = area
-                best_id = td.track_id
-            continue
+                best_inside_id   = tid
+            continue   # skip Tier C for this vehicle
 
-        if best_inside_area is not None:
-            continue
-
-        cx = (bx1 + bx2) / 2
-        cy = (by1 + by2) / 2
+        # Tier C: proximity — only allowed within 1.5× vehicle width
+        cx   = (bx1 + bx2) / 2
+        cy   = (by1 + by2) / 2
         dist = ((px_c - cx) ** 2 + (py_c - cy) ** 2) ** 0.5
-        if dist < best_dist:
-            best_dist = dist
-            best_id = td.track_id
+        local_max = max(max_dist_px, v_w * 1.5)
+        if dist < best_dist and dist < local_max:
+            best_dist    = dist
+            best_dist_id = tid
 
-    return best_id
+    # Return best match in priority order
+    if best_iou_id is not None:
+        return best_iou_id
+    if best_inside_id is not None:
+        return best_inside_id
+    return best_dist_id   # None if nothing qualified
+

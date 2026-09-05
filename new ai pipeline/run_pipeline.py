@@ -57,16 +57,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from pipeline.frame_extractor import extract_frames
-from pipeline.detector        import detect_frames
-from pipeline.rules           import apply_rules_to_all
-from pipeline.ocr             import read_plate, majority_vote_plate
-from pipeline.plate_aggregator import PlateAggregator, find_nearest_track_id
-from pipeline.verification    import aggregate_verdicts, resolve_dominant_vehicle_type
-from pipeline.report          import build_report, report_to_json
-from pipeline.annotator       import draw_detections, draw_verdict_overlay, draw_tracked_detections
-from pipeline.tracker         import Tracker, stitch_track_fragments
-from pipeline.heuristics      import WheelieDetector, ErraticDrivingDetector
+from pipeline.frame_extractor         import extract_frames
+from pipeline.detector                import detect_frames
+from pipeline.rules                   import apply_rules_to_all
+from pipeline.ocr                     import read_plate, majority_vote_plate
+from pipeline.plate_aggregator        import PlateAggregator, find_nearest_track_id
+from pipeline.verification            import aggregate_verdicts, resolve_dominant_vehicle_type
+from pipeline.report                  import build_report, report_to_json
+from pipeline.annotator               import draw_detections, draw_verdict_overlay, draw_tracked_detections
+from pipeline.tracker                 import Tracker, stitch_track_fragments
+from pipeline.heuristics              import WheelieDetector, ErraticDrivingDetector
+from pipeline.vehicle_state           import VehicleStateRegistry
+from pipeline.vehicle_class_aggregator import VehicleClassAggregator
+from pipeline.track_merger            import TrackMerger
+from pipeline.indian_plate_validator  import is_real_state_code, best_plate_candidate
+from pipeline.vehicle_class_gate      import is_two_wheeler
 
 STATUS_COLOURS = {
     "auto_flagged":          "\033[91m",
@@ -133,10 +138,26 @@ def run(
     total_track_ids = 0
     track_history: dict = {}
 
+    # Shared per-vehicle state registry — all stages write observations here.
+    registry = VehicleStateRegistry()
+
+    # Accumulate-then-vote vehicle class aggregator (fixes Bug 2.4).
+    class_agg = VehicleClassAggregator()
+
     if use_tracker:
-        for fd in frame_detections:
+        for i_frame, fd in enumerate(frame_detections):
             tracked = tracker.update(fd)
             track_results[fd.timestamp] = tracked
+
+            # Feed per-frame class votes into the aggregator
+            for det in tracked:
+                if det.track_id >= 0 and det.class_name:
+                    class_agg.add_vote(
+                        track_id=det.track_id,
+                        vehicle_class=det.class_name,
+                        confidence=det.confidence,
+                        frame_index=i_frame,
+                    )
 
         total_track_ids = tracker._next_id - 1
         print(f"    Total unique IDs assigned: {total_track_ids}")
@@ -164,12 +185,44 @@ def run(
         for trk in list(tracker._active) + list(tracker._lost):
             track_history[trk.track_id] = {
                 "class":               trk.class_name,
-                "first_seen":          round(trk.last_bbox[0] if trk.last_bbox else 0.0, 3),
+                "first_seen":          round(max(0.0, (trk.age - trk.hits) * interval), 3),
                 "last_seen":           round(trk.age * interval, 3),
                 "frame_count":         trk.hits,
-                "avg_confidence":      0.0,   # filled below
-                "violations_on_track": [],
+                "avg_confidence":      0.0,   # filled below from track_results
+                "violations_on_track": [],    # back-filled after Stage 4
             }
+
+        # ── Bug 2.3 fix: fill avg_confidence from accumulated track detections
+        # track_results holds every TrackedDetection with its .confidence score.
+        # Accumulate per-track sum + count, then normalize.
+        _conf_sum:   dict[int, float] = {}
+        _conf_count: dict[int, int]   = {}
+        for ts_tracked in track_results.values():
+            for det in ts_tracked:
+                if det.track_id >= 0 and det.confidence > 0.0:
+                    _conf_sum[det.track_id]   = _conf_sum.get(det.track_id, 0.0) + det.confidence
+                    _conf_count[det.track_id] = _conf_count.get(det.track_id, 0) + 1
+        for tid, hist in track_history.items():
+            if tid in _conf_count and _conf_count[tid] > 0:
+                hist["avg_confidence"] = round(
+                    _conf_sum[tid] / _conf_count[tid], 4
+                )
+
+        # Resolve stable vehicle classes and push into registry
+        class_resolutions = class_agg.resolve_all()
+        n_stable = sum(1 for r in class_resolutions.values() if r.is_stable)
+        print(f"    Vehicle class votes resolved: {len(class_resolutions)} tracks, "
+              f"{n_stable} stable")
+        for tid, cr in class_resolutions.items():
+            registry.set_vehicle_class(
+                track_id=tid,
+                vehicle_class=cr.resolved_class,
+                confidence=cr.agreement,
+                is_stable=cr.is_stable,
+            )
+            if cr.flip_flopped:
+                print(f"      Track {tid}: class flip-flop ({cr.resolved_class} "
+                      f"vs {cr.runner_up}) — treating as unstable")
     else:
         print("    Skipped (use --track to enable)")
 
@@ -198,6 +251,115 @@ def run(
     if phone_frames:   print(f"      Phone usage: {phone_frames}/{len(frames)} frames")
     if wheelie_frames: print(f"      Wheelie:     {wheelie_frames}/{len(frames)} frames")
     if erratic_frames: print(f"      Erratic:     {erratic_frames}/{len(frames)} frames")
+
+    # ── Feed per-frame violation observations into VehicleStateRegistry ──────
+    # Map each FrameVerdict's violations to the tracks that were present in
+    # that frame — so every observation is keyed by track_id, not frame index.
+    # This is the "shared vehicle brain" step: observations accumulate here and
+    # are resolved at clip end (Stage 6 output is NOT changed by this).
+    _VIOLATION_KEYS = {
+        "no_helmet", "triple_riding", "phone_usage",
+        "wheelie", "erratic_driving", "signal_violation",
+    }
+    if use_tracker:
+        for i_fv, fv in enumerate(frame_verdicts):
+            ts = fv.timestamp
+            tracks_in_frame = track_results.get(ts, [])
+            # Determine which track IDs are in this frame
+            frame_track_ids = {
+                det.track_id for det in tracks_in_frame if det.track_id >= 0
+            }
+            # Update first/last seen in registry for each visible track
+            for det in tracks_in_frame:
+                if det.track_id >= 0:
+                    registry.add_observation(
+                        track_id=det.track_id,
+                        frame_index=i_fv,
+                        timestamp=ts,
+                        source="detector",
+                        key="present",
+                        value=True,
+                        confidence=det.confidence,
+                    )
+
+            # Push violation observations to matching visible tracks
+            for violation in fv.violations:
+                norm_v = violation  # e.g. 'no_helmet', 'triple_riding'
+                if norm_v not in _VIOLATION_KEYS:
+                    continue
+                is_two_wh_viol = norm_v in {"no_helmet", "triple_riding", "wheelie"}
+                for det in tracks_in_frame:
+                    if det.track_id < 0:
+                        continue
+                    if is_two_wh_viol and not is_two_wheeler(det.class_name):
+                        continue
+                    registry.add_observation(
+                        track_id=det.track_id,
+                        frame_index=i_fv,
+                        timestamp=ts,
+                        source="rules",
+                        key=norm_v,
+                        value=True,
+                        confidence=fv.avg_detection_confidence,
+                    )
+
+            # Push phone_usage and wheelie (bool fields, not in .violations list)
+            for bool_key, bool_val in [
+                ("phone_usage", fv.phone_usage),
+                ("wheelie",     fv.wheelie),
+            ]:
+                if bool_val:
+                    is_two_wh_viol = (bool_key == "wheelie")
+                    for det in tracks_in_frame:
+                        if det.track_id < 0:
+                            continue
+                        if is_two_wh_viol and not is_two_wheeler(det.class_name):
+                            continue
+                        registry.add_observation(
+                            track_id=det.track_id,
+                            frame_index=i_fv,
+                            timestamp=ts,
+                            source="rules",
+                            key=bool_key,
+                            value=True,
+                            confidence=fv.avg_detection_confidence,
+                        )
+
+            # Push erratic_driving observations to the specific erratic tracks
+            for erratic_tid in fv.erratic_track_ids:
+                registry.add_observation(
+                    track_id=erratic_tid,
+                    frame_index=i_fv,
+                    timestamp=ts,
+                    source="heuristics",
+                    key="erratic_driving",
+                    value=True,
+                    confidence=0.75,   # heuristic confidence (no model score)
+                )
+
+    # \u2500\u2500 Bug 2.3 fix: back-fill violations_on_track in track_history
+    # Now that frame_verdicts exist, collect every unique violation type seen
+    # in any frame where each track was visible. This makes track_log.json
+    # actually useful for admin review (was always [] before this fix).
+    if use_tracker and track_history:
+        _track_violations: dict[int, set] = {tid: set() for tid in track_history}
+        for fv in frame_verdicts:
+            if not fv.violations:
+                continue
+            tracks_in_frame = track_results.get(fv.timestamp, [])
+            for det in tracks_in_frame:
+                if det.track_id < 0 or det.track_id not in _track_violations:
+                    continue
+                for v in fv.violations:
+                    if v in {"no_helmet", "triple_riding", "wheelie"} and not is_two_wheeler(det.class_name):
+                        continue
+                    _track_violations[det.track_id].add(v)
+            # Erratic-driving: keyed to specific erratic track IDs
+            for erratic_tid in fv.erratic_track_ids:
+                if erratic_tid in _track_violations:
+                    _track_violations[erratic_tid].add("erratic_driving")
+        for tid, viols in _track_violations.items():
+            track_history[tid]["violations_on_track"] = sorted(viols)
 
     # Subject-vehicle identification — needed before OCR resolution so a
     # plate read on the flagged vehicle's own track outranks a cleaner read
@@ -264,6 +426,39 @@ def run(
                 status_lbl = "valid" if raw.is_valid else "invalid format"
                 print(f"      [{raw.tier} {raw.source} track {tid}] -> '{raw.text}' [{status_lbl}]")
 
+    # ── Car track fragment merger (plate-similarity + time compatibility) ──
+    if use_tracker and track_history:
+        car_merger = TrackMerger()
+        raw_reads_map = aggregator.raw_reads_by_track()
+        for tid, raw_plates in raw_reads_map.items():
+            hist = track_history.get(tid)
+            if hist and raw_plates:
+                car_merger.register_track(
+                    track_id=tid,
+                    raw_plates=raw_plates,
+                    first_seen=hist["first_seen"],
+                    last_seen=hist["last_seen"],
+                    video_duration_hint=frames[-1].timestamp if frames else 300.0,
+                )
+        car_merges = car_merger.find_merge_candidates()
+        for mc in car_merges:
+            print(f"    Car merge: track {mc.fragment_id} -> {mc.primary_id} "
+                  f"(plates {mc.best_plate_pair}, sim={mc.plate_similarity:.2f})")
+            aggregator.merge_tracks(mc.primary_id, mc.fragment_id)
+            registry.merge_tracks(mc.primary_id, mc.fragment_id)
+            if mc.fragment_id in track_history and mc.primary_id in track_history:
+                p_hist = track_history[mc.primary_id]
+                f_hist = track_history[mc.fragment_id]
+                p_hist["first_seen"] = min(p_hist["first_seen"], f_hist["first_seen"])
+                p_hist["last_seen"] = max(p_hist["last_seen"], f_hist["last_seen"])
+                p_hist["frame_count"] += f_hist["frame_count"]
+                p_hist["violations_on_track"] = sorted(
+                    set(p_hist["violations_on_track"]) | set(f_hist["violations_on_track"])
+                )
+                del track_history[mc.fragment_id]
+            if mc.fragment_id in vehicle_track_labels:
+                del vehicle_track_labels[mc.fragment_id]
+
     # Final resolution: pick best plate across all tracks
     resolutions = aggregator.resolve_all()
     plate_by_track = {
@@ -272,10 +467,35 @@ def run(
         if tid >= 0 and res.plate_text and res.is_validated
     }
     subject_track_ids = {tid for tid, cls in vehicle_track_labels.items() if cls == dominant_vehicle_type}
+
+    # ── State-code filter (Bug 2.5 fix) ────────────────────────────────────
+    # Before picking the best plate, build a candidate list where each
+    # (track_id, plate_text) pair is scored by agreement — then use
+    # best_plate_candidate() to prefer real Indian state codes over
+    # format-valid-but-impossible codes (e.g. HH vs MH).
+    all_plate_candidates = [
+        (res.plate_text, res.agreement)
+        for tid, res in resolutions.items()
+        if tid >= 0 and res.plate_text and res.is_validated
+    ]
+    state_filtered = best_plate_candidate(all_plate_candidates)
+
     best_resolution = aggregator.best_result(resolutions, preferred_track_ids=subject_track_ids)
     if best_resolution:
-        number_plate   = best_resolution.plate_text
-        ocr_agreement  = best_resolution.agreement
+        # If state-code filtering picks a different winner, prefer it
+        if (
+            state_filtered
+            and state_filtered[0] != best_resolution.plate_text
+            and is_real_state_code(state_filtered[0])
+            and not is_real_state_code(best_resolution.plate_text or "")
+        ):
+            print(f"    State-code filter override: "
+                  f"'{best_resolution.plate_text}' → '{state_filtered[0]}'")
+            number_plate  = state_filtered[0]
+            ocr_agreement = state_filtered[1]
+        else:
+            number_plate  = best_resolution.plate_text
+            ocr_agreement = best_resolution.agreement
         print(f"    Final plate: {number_plate or '<unreadable>'}  "
               f"(agreement {ocr_agreement:.0%}, tier={best_resolution.winning_tier}, "
               f"valid_reads={best_resolution.valid_reads}/{best_resolution.total_reads})")
@@ -284,18 +504,44 @@ def run(
         ocr_agreement = 0.0
         print("    Final plate: <unreadable> (no detections)")
 
-    vehicle_plate_lines = [
-        f"ID:{tid} {cls.replace('_', ' ')} plate: {plate_by_track.get(tid, 'unreadable')}"
-        for tid, cls in sorted(vehicle_track_labels.items())
-    ]
+    # ── Push plate results into VehicleStateRegistry ─────────────────────
+    if use_tracker:
+        for tid, res in resolutions.items():
+            if tid >= 0:
+                registry.set_plate(
+                    track_id=tid,
+                    plate_text=res.plate_text,
+                    confidence=res.confidence,
+                    needs_review=bool(res.needs_review),
+                )
+
     vehicles_detected = [
         {
             "track_id": tid,
             "class": cls,
             "plate": plate_by_track.get(tid),
-            "plate_status": "read" if tid in plate_by_track else "unreadable",
+            "plate_status": (
+                "read"
+                if tid in plate_by_track and not resolutions[tid].needs_review
+                else "needs_review"
+                if tid in plate_by_track
+                else "unreadable"
+            ),
+            "plate_confidence": round(resolutions[tid].confidence, 4) if tid in resolutions else 0.0,
+            "plate_agreement": round(resolutions[tid].agreement, 4) if tid in resolutions else 0.0,
+            "valid_plate_reads": resolutions[tid].valid_reads if tid in resolutions else 0,
+            "total_plate_reads": resolutions[tid].total_reads if tid in resolutions else 0,
+            "ocr_tier": resolutions[tid].winning_tier if tid in resolutions else "none",
+            "ocr_needs_review": bool(resolutions[tid].needs_review) if tid in resolutions else True,
         }
         for tid, cls in sorted(vehicle_track_labels.items())
+    ]
+    vehicle_plate_lines = [
+        (
+            f"ID:{v['track_id']} {v['class'].replace('_', ' ')} "
+            f"plate: {v['plate'] or 'unreadable'} ({v['plate_status']})"
+        )
+        for v in vehicles_detected
     ]
 
 
@@ -409,6 +655,13 @@ def run(
     _stage(8, "Report & Evidence Frames")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve all accumulated per-vehicle observations before building report
+    registry.resolve_all()
+    vehicle_records = registry.export_report()
+    n_confirmed = sum(1 for v in vehicle_records if v["has_violation"])
+    print(f"    VehicleStateRegistry: {len(vehicle_records)} vehicle(s), "
+          f"{n_confirmed} with confirmed violation(s)")
+
     report = build_report(
         verification_result=vr,
         number_plate=number_plate,
@@ -419,6 +672,7 @@ def run(
         run_id=output_dir.name,
         track_history=track_history or None,
         vehicles_detected=vehicles_detected,
+        vehicle_records=vehicle_records,   # VehicleStateRegistry full export
     )
 
     # Save annotated evidence frames

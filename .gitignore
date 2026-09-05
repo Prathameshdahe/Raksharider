@@ -76,10 +76,12 @@ node_modules/
 *.avi
 *.mkv
 
-# ── Docs & Internal ───────────────────────────────────────────────────────────
-docs/
+# Allow sample test video and evidence showcase
+!new ai pipeline/tests/sample_videos/sample.mp4
+!evidence/
+!evidence/**
 
-# ── Evidence / Pipeline outputs ───────────────────────────────────────────────
+# ── Evidence / Temporary Pipeline outputs ─────────────────────────────────────
 evidence_output/
 pipeline/evidence_output/
 new ai pipeline/pipeline/evidence_output/

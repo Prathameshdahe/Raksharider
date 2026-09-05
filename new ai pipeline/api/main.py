@@ -138,19 +138,19 @@ def _run_pipeline(source_path: str, sample_interval: float = 0.5) -> Dict[str, A
 
     # 6. Report + annotated evidence frames
     logger.info("[6/6] Building report")
-    annotated_paths = []
+    # save via report.py's evidence dir
+    from pipeline.report import EVIDENCE_OUTPUT_DIR
+    import uuid
+    run_id = str(uuid.uuid4())[:8]
+    out_dir = EVIDENCE_OUTPUT_DIR / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     for i, frame in enumerate(frames):
         if frame.timestamp not in vr.evidence_frame_timestamps:
             continue
         fd = frame_detections[i]
         img = draw_detections(frame.image, fd.detections, number_plate)
         img = draw_verdict_overlay(img, vr, number_plate, i + 1, len(frames))
-        # save via report.py's evidence dir
-        from pipeline.report import EVIDENCE_OUTPUT_DIR
-        import uuid
-        run_id = str(uuid.uuid4())[:8]
-        out_dir = EVIDENCE_OUTPUT_DIR / run_id
-        out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"evidence_t{frame.timestamp:.3f}s.jpg"
         cv2.imwrite(str(path), img)
         annotated_paths.append(str(path.resolve()))

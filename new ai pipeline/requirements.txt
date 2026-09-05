@@ -3,6 +3,9 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 ultralytics>=8.3.0             # YOLOv8/v11; 8.3+ removes torch<2.4 Windows pin
 easyocr==1.7.1                 # OCR; downloads language models on first run
+# Optional OCR boosters:
+#   paddleocr                 # stronger second-pass plate OCR
+#   google-genai              # Gemini/VLM validation and final OCR rescue
 
 # ── API framework ─────────────────────────────────────────────────────────────
 fastapi==0.111.1

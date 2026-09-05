@@ -1,7 +1,0 @@
-names:
-  0: helmet
-  1: no helmet
-path: C:/Users/DELL/Desktop/RakshaRide/detection-pipeline/dataset/helmet_dataset
-test: test/images
-train: train/images
-val: valid/images

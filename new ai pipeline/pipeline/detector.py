@@ -76,6 +76,8 @@ PLATE_CLASSES: dict[str, str] = {
     "license_plate": "license_plate",
     "plate":         "license_plate",
 }
+PLATE_TARGET_CLASSES = PLATE_CLASSES
+
 
 # classifiacation.pt classes → unified internal labels
 VEHICLE_CLASSES: dict[str, str] = {

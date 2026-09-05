@@ -1,274 +1,204 @@
-# RakshaRide — Two-Wheeler Violation Detection Pipeline
+# RakshaRide — Distributed AI Traffic Intelligence Network (v2)
 
-> **Automated advisory system for helmet and triple-riding violations.**  
-> Detects violations from traffic camera footage and outputs a structured JSON report for human review.  
-> Not an enforcement decision — advisory only.
+[![Unit Tests](https://img.shields.io/badge/tests-84%20passed-success)](tests/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![YOLOv8](https://img.shields.io/badge/models-YOLOv8-orange)](https://github.com/ultralytics/ultralytics)
+[![Tracking](https://img.shields.io/badge/tracker-ByteTrack-green)](https://github.com/ifzhang/ByteTrack)
+[![ANPR](https://img.shields.io/badge/OCR-EasyOCR%20%7C%20PaddleOCR%20%7C%20Gemini%20VLM-purple)](pipeline/ocr.py)
 
----
-
-## Features
-
-- 🪖 **Helmet Detection** — fine-tuned YOLOv8 classifies `helmet` / `no helmet` per rider
-- 🏍️ **Rider Detection** — COCO YOLOv8 identifies `person` + `motorcycle`, IoU-based pairing
-- 👥 **Triple-Riding Detection** — flags ≥ 3 riders on a single motorcycle
-- 🔢 **License Plate OCR** — custom plate detector (`ampr.pt`) + EasyOCR with Indian format validation (`MH12AB1234`)
-- 🔁 **Multi-frame Consistency** — aggregates verdicts across frames for reliability
-- 📊 **Severity Scoring** — weighted formula → `auto_flagged` / `needs_review` / `insufficient_evidence`
-- 🌐 **REST API** — FastAPI endpoint for video/image upload and JSON report
-- ✅ **19 unit tests** — synthetic bbox inputs, no model loading, runs in ~0.2 s
+> **Automated, track-centric traffic violation intelligence and advisory system.**  
+> Processes traffic/dashcam footage, assigns persistent vehicle track IDs, accumulates multi-frame observations across 4 independent neural models, and resolves verdicts with evidence frames, annotated videos, and license plate recognition.  
+> *Advisory only — designed to assist human enforcement review.*
 
 ---
 
-## Architecture
+## 🎬 Evidence & Video Showcase
 
-```
-Video / Image
-      │
-      ▼
-┌─────────────────────┐
-│  Frame Extractor    │  Sample 1 frame / 0.5 s (configurable)
-└────────┬────────────┘
-         │  List[Frame]
-         ▼
-┌─────────────────────────────────────────────────────┐
-│  YOLO Detection  (3 models, lazy-loaded singletons) │
-│                                                     │
-│  ① yolov8n.pt       → person, motorcycle           │
-│  ② helmet_model.pt  → helmet, no_helmet            │
-│  ③ ampr.pt          → license_plate                │
-└────────┬────────────────────────────────────────────┘
-         │  List[FrameDetections]
-         ▼
-┌─────────────────────┐
-│   Rule Engine       │  IoU-based rider↔motorcycle pairing
-│                     │  Head-region helmet association (top 25 %)
-│                     │  Triple-riding threshold (≥ 3 riders)
-└────────┬────────────┘
-         │  List[FrameVerdict]
-         ▼
-┌─────────────────────┐      ┌─────────────────────┐
-│   OCR Engine        │      │   Verification      │
-│   (EasyOCR)         │      │   & Severity Score  │
-│   plate crop → text │      │   multi-frame agg.  │
-└────────┬────────────┘      └────────┬────────────┘
-         └──────────┬─────────────────┘
-                    ▼
-           ┌─────────────────┐
-           │   JSON Report   │  + annotated evidence JPEGs
-           └─────────────────┘
-```
+The pipeline produces annotated video evidence, high-resolution flagged frame crops, and vehicle-level incident audit logs.
+
+### 📹 Annotated Evidence Video
+- **[▶ View / Download Annotated Evidence Video (`evidence/evidence_video.mp4`)](evidence/evidence_video.mp4)**  
+*(Click the link above to view or download the full video output on GitHub)*
+
+### 📸 Flagged Evidence Frames
+| Frame @ 15.5s | Frame @ 16.0s | Frame @ 16.5s |
+| :---: | :---: | :---: |
+| ![Frame 15.5s](evidence/evidence_t15.500s.jpg) | ![Frame 16.0s](evidence/evidence_t16.000s.jpg) | ![Frame 16.5s](evidence/evidence_t16.500s.jpg) |
 
 ---
 
-## Results
+## 🌟 Key Architecture & Capabilities
 
-> Training was performed on the [Roboflow Motorcycle Helmet Dataset](https://roboflow.com) (YOLOv8 OBB variant).  
-> **Download dataset:** [Roboflow / Google Drive link — add yours here]
+1. **4 Independent Model Stages:**
+   - **`yolov8n.pt`**: Multi-class detection (`person`, `motorcycle`, `car`, `bus`, `truck`, `traffic light`, `cell phone`).
+   - **`helmet_model.pt`**: Dedicated classifier for `helmet` vs `no helmet`.
+   - **`ampr.pt`**: High-precision license plate localizer.
+   - **`classifiacation.pt`**: Fine-grained vehicle classifier (`Bus`, `Car`, `Mini LCV`, `Truck 3/4/5-axle`).
 
-| Metric        | Helmet Model (`helmet_model.pt`) |
-|---------------|----------------------------------|
-| Precision     | —  *(fill from `runs/` results.csv)* |
-| Recall        | —  *(fill from `runs/` results.csv)* |
-| mAP@50        | —  *(fill from `runs/` results.csv)* |
-| mAP@50-95     | —  *(fill from `runs/` results.csv)* |
+2. **Track-Centric Evidence Brain (`VehicleStateRegistry`):**
+   - Each vehicle receives a persistent ID via **ByteTrack**.
+   - Violations (`no_helmet`, `triple_riding`, `phone_usage`, `wheelie`, `erratic_driving`, `signal_violation`) accumulate across the clip per vehicle ID.
+   - Verdicts are confirmed via **minimum evidence count** and **agreement ratio**, not single-frame glitches.
 
-> To get your metrics: open `detection-pipeline/runs/detect/helmet_train/results.csv` locally.
+3. **Two-Wheeler Gating (`VehicleClassGate`):**
+   - Hard guard clause preventing false positives: non-two-wheelers (cars, buses, trucks) can never receive helmet, triple-riding, or wheelie violations.
+
+4. **Multi-Frame ANPR Engine:**
+   - **Zoom-then-read** (`plate_crop_enhancer.py`): 15% crop padding and 128px upscaling before OCR.
+   - **3-Tier Escalation**: EasyOCR (fast local) → PaddleOCR (structured fallback) → Gemini Vision VLM (ambiguity breaker).
+   - **Positional Consensus**: Character-position majority voting recovers plates missed by individual frames.
+   - **Indian State-Code Whitelist**: Filters out impossible state codes (e.g., `HH` vs `MH`).
+
+5. **Car Track Merger (`TrackMerger`):**
+   - Re-links fragmented car tracks across camera occlusions using Levenshtein plate similarity ($\le 2$) and temporal compatibility.
 
 ---
 
-## Project Structure
+## 📂 Project Structure
 
-```
+```text
 RakshaRide/
-├── detection-pipeline/
+├── evidence/                            # Curated evidence showcase (video & frames)
+│   ├── evidence_video.mp4               # Full annotated video with bounding boxes & tags
+│   ├── evidence_t15.500s.jpg            # Flagged evidence frame
+│   ├── evidence_t16.000s.jpg
+│   ├── evidence_t16.500s.jpg
+│   ├── report.json                      # Sample JSON violation output
+│   └── track_log.json                   # Vehicle tracking audit log
+├── new ai pipeline/                     # Production AI Pipeline
 │   ├── pipeline/
-│   │   ├── frame_extractor.py   -- video/image frame sampling
-│   │   ├── detector.py          -- 3-model YOLO detection
-│   │   ├── rules.py             -- rider counting, helmet association, triple-riding
-│   │   ├── ocr.py               -- EasyOCR + Indian plate format validation
-│   │   ├── verification.py      -- multi-frame consistency + severity scoring
-│   │   ├── report.py            -- JSON report + evidence frame output
-│   │   └── annotator.py         -- draws bboxes and verdict overlay
+│   │   ├── frame_extractor.py           # Video frame sampling
+│   │   ├── detector.py                  # Multi-model inference coordinator
+│   │   ├── tracker.py                   # ByteTrack Kalman filter tracking
+│   │   ├── vehicle_state.py             # VehicleState & VehicleStateRegistry
+│   │   ├── vehicle_class_gate.py        # Strict two-wheeler guard clauses
+│   │   ├── vehicle_class_aggregator.py  # Multi-frame vehicle voting with flip-flop detection
+│   │   ├── track_merger.py              # Car track fragment merger via Levenshtein
+│   │   ├── plate_crop_enhancer.py       # Zoom-then-read padding & upscaling
+│   │   ├── indian_plate_validator.py    # 36 Indian state/UT code whitelist
+│   │   ├── plate_aggregator.py          # 3-tier OCR escalation & positional consensus
+│   │   ├── ocr.py                       # EasyOCR / PaddleOCR text extraction
+│   │   ├── rules.py                     # Rule engine (helmet, riders, phone, lights)
+│   │   ├── heuristics.py                # Wheelie & erratic driving heuristics
+│   │   ├── verification.py              # Clip-level consistency scoring
+│   │   ├── report.py                    # Output report generator (vehicles_v2)
+│   │   ├── annotator.py                 # Evidence overlay and video renderer
+│   │   ├── feedback_layer.py            # Human review audit logging
+│   │   └── vlm.py                       # Gemini / NVIDIA VLM validators
+│   ├── models/                          # Trained weights (.pt via Git LFS)
+│   │   ├── yolov8n.pt                   # COCO base detector
+│   │   ├── helmet_model.pt              # Custom helmet detector
+│   │   ├── ampr.pt                      # Custom license plate detector
+│   │   └── classifiacation.pt           # Custom vehicle classification
 │   ├── api/
-│   │   └── main.py              -- FastAPI: POST /analyze, GET /health
-│   ├── tests/
-│   │   ├── sample_videos/       -- drop test clips here (sample.mp4 via LFS)
-│   │   └── test_pipeline.py     -- 19 unit tests (no model loading needed)
-│   ├── models/                  -- .pt weights via Git LFS
-│   │   ├── helmet_model.pt
-│   │   └── ampr.pt
-│   ├── dataset/
-│   │   └── helmet_dataset/
-│   │       ├── data.yaml        -- class config (committed)
-│   │       └── README.*.txt     -- dataset info (committed)
-│   │       # train/test/valid splits → download from Roboflow (not committed)
-│   ├── run_pipeline.py          -- CLI entry point
-│   ├── train_helmet_model.py    -- YOLOv8 fine-tuning script
-│   ├── prepare_dataset.py       -- Roboflow dataset conversion utility
-│   └── requirements.txt
-├── .gitattributes               -- Git LFS tracking config
+│   │   └── main.py                      # FastAPI REST service (/analyze, /health)
+│   ├── tests/                           # 84 automated unit tests
+│   │   ├── test_track_network.py        # Vehicle state, gating, merging tests
+│   │   ├── test_pipeline.py             # Rule engine synthetic tests
+│   │   ├── test_plate_aggregator.py     # Multi-frame OCR consensus tests
+│   │   ├── test_tracker.py              # Tracking tests
+│   │   └── sample_videos/               # Sample test video clips
+│   ├── requirements.txt                 # Python dependencies
+│   └── run_pipeline.py                  # CLI pipeline runner
+├── docs/
+│   └── master_build_spec.md             # Authoritative architecture spec
+├── .gitattributes                       # Git LFS rules for weights & videos
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Setup
+## 🚀 Quickstart
 
-```bash
+### 1. Environment Setup
+```powershell
+# Clone the repository
+git clone https://github.com/Prathameshdahe/Raksharider.git
+cd Raksharider
+
+# Navigate to pipeline directory
+cd "new ai pipeline"
+
+# Create virtual environment
 python -m venv .venv
+.venv\Scripts\Activate.ps1   # On Windows
+# source .venv/bin/activate  # On Linux/macOS
 
-# Windows
-.venv\Scripts\Activate.ps1
-# Linux / macOS
-source .venv/bin/activate
-
-# GPU (CUDA 12.1)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-# CPU only
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-pip install -r detection-pipeline/requirements.txt
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-EasyOCR downloads its English model (~100 MB) on first use, cached locally.
+### 2. Run the Pipeline on Video
+```powershell
+# Run with tracking enabled
+python run_pipeline.py tests/sample_videos/sample.mp4 --track
 
----
+# Run with custom sampling interval and output folder
+python run_pipeline.py tests/sample_videos/sample.mp4 --interval 0.5 --out pipeline/evidence_output/my_run --track
 
-## Models
-
-Place these in `detection-pipeline/models/` before running:
-
-| File               | Purpose                                      | Source         |
-|--------------------|----------------------------------------------|----------------|
-| `helmet_model.pt`  | Helmet / no-helmet detector (YOLOv8n)        | Git LFS        |
-| `ampr.pt`          | License plate detector                       | Git LFS        |
-
-`yolov8n.pt` (COCO base) is auto-downloaded by ultralytics on first run (~6 MB).
-
----
-
-## CLI Usage
-
-```bash
-cd detection-pipeline
-
-# Run on a video
-python run_pipeline.py tests/sample_videos/sample.mp4
-
-# Custom frame interval and output directory
-python run_pipeline.py tests/sample_videos/sample.mp4 --interval 1.0 --out results/demo
-
-# Run on a single image
-python run_pipeline.py frame.jpg
+# Run with VLM escalation enabled
+python run_pipeline.py tests/sample_videos/sample.mp4 --track --vlm
 ```
 
-Output: annotated evidence JPEGs + `report.json` in the output directory.
-
----
-
-## REST API
-
-```bash
-cd detection-pipeline
-uvicorn api.main:app --reload --port 8000
-```
-
-| Endpoint        | Method | Description                              |
-|-----------------|--------|------------------------------------------|
-| `/health`       | GET    | Liveness check                           |
-| `/analyze`      | POST   | Upload video/image → returns JSON report |
-| `/docs`         | GET    | Interactive Swagger UI                   |
-
-```bash
-curl -X POST http://localhost:8000/analyze \
-     -F "file=@clip.mp4" \
-     -F "sample_interval=0.5"
+### 3. Run Automated Tests
+```powershell
+python -m pytest tests/ -v
+# 84 passed in ~0.86s
 ```
 
 ---
 
-## Unit Tests
-
-```bash
-cd detection-pipeline
-pytest tests/test_pipeline.py -v
-```
-
-19 synthetic tests — IoU, head-box geometry, rider counting, helmet association, edge cases.  
-No footage or model loading required. Runs in **~0.2 s**.
-
----
-
-## Report Format
+## 📊 Sample Output Report (`report.json`)
 
 ```json
 {
-  "_disclaimer": "Automated recommendation for human review. Not a final enforcement or fine decision.",
-  "run_id": "a1b2c3d4",
-  "generated_at": "2026-07-22T08:00:00+00:00",
-  "status": "auto_flagged | needs_review | insufficient_evidence",
-  "severity_score": 0.87,
-  "violations_detected": ["no_helmet", "triple_riding"],
-  "rider_count": 3,
-  "helmet_status": "no_helmet | helmet | unclear",
-  "number_plate": "MH12AB1234",
-  "plate_read_confidence": 0.83,
-  "evidence_frame_timestamps": [7.5, 23.9],
-  "frame_consistency_ratio": 0.78,
-  "avg_yolo_confidence": 0.71,
-  "ocr_agreement_ratio": 0.83,
-  "notes": ""
+  "_disclaimer": "Automated advisory for human review. Not a final enforcement decision.",
+  "run_id": "7b8c2d11",
+  "generated_at": "2026-09-05T07:15:00Z",
+  "status": "auto_flagged",
+  "severity_score": 0.88,
+  "dominant_vehicle_type": "motorcycle",
+  "summary": {
+    "total_vehicles_tracked": 3,
+    "vehicles_with_violations": 1,
+    "vehicles_clean": 2
+  },
+  "all_tracked_vehicles": [
+    {
+      "track_id": 1,
+      "class": "motorcycle",
+      "first_seen": 15.0,
+      "last_seen": 17.5,
+      "violations": ["no_helmet"]
+    }
+  ],
+  "vehicles_v2": [
+    {
+      "track_id": 1,
+      "vehicle_class": "motorcycle",
+      "class_confidence": 0.95,
+      "plate": {
+        "text": "MH01DP1218",
+        "confidence": 0.88,
+        "needs_review": false
+      },
+      "confirmed_violations": ["no_helmet"],
+      "violations": {
+        "no_helmet": {
+          "result": "confirmed",
+          "evidence_frames": 4,
+          "agreement": 0.80,
+          "confidence": 0.89,
+          "reasoning": "Confirmed: 4/5 frames positive (agreement 80%, mean_conf 0.89)."
+        }
+      }
+    }
+  ]
 }
 ```
 
-### Severity Formula
-
-```
-severity = 0.5 × frame_consistency_ratio
-         + 0.3 × avg_yolo_confidence
-         + 0.2 × ocr_agreement_ratio
-```
-
-| Status                    | Severity   | Meaning                        |
-|---------------------------|------------|--------------------------------|
-| `auto_flagged`            | ≥ 0.85     | Ready for review queue         |
-| `needs_review`            | 0.50–0.84  | Human should examine evidence  |
-| `insufficient_evidence`   | < 0.50     | Do not treat as a violation    |
-
 ---
 
-## Environment Variables
-
-| Variable               | Default                     | Description                        |
-|------------------------|-----------------------------|------------------------------------|
-| `COCO_MODEL_PATH`      | `yolov8n.pt`                | COCO base model (person/motorcycle)|
-| `HELMET_MODEL_PATH`    | `models/helmet_model.pt`    | Helmet/no-helmet YOLO weights      |
-| `PLATE_MODEL_PATH`     | `models/ampr.pt`            | Plate detector weights             |
-| `YOLO_CONF_THRESHOLD`  | `0.35`                      | Min confidence to keep a detection |
-
----
-
-## Dataset
-
-Training data: **Motorcycle Helmet Detection** dataset from [Roboflow Universe](https://universe.roboflow.com).  
-**Download link:** *(add your Roboflow or Google Drive link here)*
-
-The `detection-pipeline/dataset/helmet_dataset/` directory in this repo contains only:
-- `data.yaml` — class configuration
-- `README.dataset.txt` / `README.roboflow.txt` — attribution
-
-Full train/test/valid splits are **not committed** to keep the repository lightweight.
-
----
-
-## Tech Stack
-
-| Component        | Technology                          |
-|------------------|-------------------------------------|
-| Detection models | YOLOv8 (Ultralytics)               |
-| OCR              | EasyOCR                            |
-| API              | FastAPI + Uvicorn                  |
-| Testing          | pytest (19 unit tests)             |
-| Large files      | Git LFS (model weights, video)     |
-| Language         | Python 3.10+                       |
+## ⚖️ Advisory Notice
+*DriveTrust AI / RakshaRide outputs are designed as decision support systems for municipal and traffic authorities. Generated alerts and violation records flag footage for human officer validation and review.*

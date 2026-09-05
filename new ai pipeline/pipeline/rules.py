@@ -41,10 +41,18 @@ logger = logging.getLogger(__name__)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
-IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.05   # IoU overlap (lowered — dashcam angle gives small overlap)
+IOU_RIDER_MOTORCYCLE_THRESHOLD: float = 0.08   # IoU overlap — tightened to reduce pedestrian false positives
 IOU_HELMET_HEAD_THRESHOLD:      float = 0.10   # IoU for helmet-to-head overlap
 HEAD_FRACTION:                  float = 0.30   # top 30% of person bbox = head region
 TRIPLE_RIDING_THRESHOLD:        int   = 3
+
+# Minimum person box height in pixels to be counted as a rider.
+# Persons smaller than this are too far away / background — not on the motorcycle.
+MIN_PERSON_HEIGHT_FOR_RIDER_PX: int = 45
+
+# Minimum person box height to reliably evaluate helmet status.
+# Below this, the head region is only ~15px tall — helmet models are unreliable.
+MIN_PERSON_HEIGHT_FOR_HELMET_PX: int = 55
 
 # Proximity fallback: if person centroid is within this fraction of moto bbox height,
 # count them as a rider even when IoU is low (rear-camera / dashcam angle)
@@ -56,15 +64,13 @@ RIDER_PROXIMITY_FRACTION: float = 1.5
 # Checks that apply to ALL vehicle classes:
 #   plate/OCR, phone usage, erratic driving, signal violation
 
-TWO_WHEELER_CLASSES: frozenset = frozenset({"motorcycle", "bicycle"})
+from pipeline.vehicle_class_gate import (
+    is_two_wheeler,
+    TWO_WHEELER_CLASSES,
+)
 FOUR_WHEELER_CLASSES: frozenset = frozenset({
     "car", "bus", "truck", "mini_lcv", "auto_rickshaw", "vehicle",
 })
-
-
-def is_two_wheeler(class_name: str) -> bool:
-    """True iff class_name is a two-wheeler (motorcycle/bicycle)."""
-    return class_name.lower() in TWO_WHEELER_CLASSES
 
 
 def is_four_wheeler(class_name: str) -> bool:
@@ -205,6 +211,10 @@ def apply_rules(
             px_c = (px1 + px2) / 2.0
             ph = py2 - py1
 
+            # Guard 1: person too small → background pedestrian, not a rider
+            if ph < MIN_PERSON_HEIGHT_FOR_RIDER_PX:
+                continue
+
             best_moto_idx: Optional[int] = None
             best_overlap_score: float = 0.0
 
@@ -213,22 +223,31 @@ def apply_rules(
                 mw = mx2 - mx1
                 mh = my2 - my1
 
-                # 1. Horizontal containment: person center within motorcycle width (+15% margin)
-                h_margin = mw * 0.15
+                # 1. Horizontal containment: person center within motorcycle width (+10% margin)
+                #    Reduced from 15% to reduce pedestrians walking beside the road.
+                h_margin = mw * 0.10
                 if not (mx1 - h_margin <= px_c <= mx2 + h_margin):
                     continue
 
-                # 2. Vertical seating: person's bottom must overlap motorcycle body
+                # 2. Feet placement: person's bottom (py2) must be within the motorcycle's
+                #    vertical span — between my1 (top) and my2 + 0.3*mh (just below).
+                #    This requires the person to be physically on/above the bike seat,
+                #    not a background pedestrian behind the bike at a different depth.
+                if not (my1 - mh * 0.3 <= py2 <= my2 + mh * 0.3):
+                    continue
+
+                # 3. Vertical seating: person's bottom must overlap motorcycle body
                 v_overlap = max(0.0, min(py2, my2) - max(py1, my1))
                 if v_overlap <= 0:
                     continue
 
-                # 3. Person cannot be completely below or absurdly above motorcycle
+                # 4. Person cannot be completely below or absurdly above motorcycle
                 if py2 < my1 or py1 > my2:
                     continue
 
-                # 4. Relative scale sanity: rider height ~ 0.35x–2.2x motorcycle height
-                if mh > 0 and not (0.35 <= ph / mh <= 2.2):
+                # 5. Relative scale sanity: tightened from 0.35–2.2 to 0.50–2.0
+                #    Prevents very small/large scale mismatches (different depths)
+                if mh > 0 and not (0.50 <= ph / mh <= 2.0):
                     continue
 
                 overlap_score = v_overlap / max(1.0, ph)
@@ -278,13 +297,31 @@ def apply_rules(
     # ── Helmet association (two-wheeler only, via guard above) ────────────────
     helmet_calls: List[HelmetStatus] = []
     for rider in all_assigned_riders:  # empty list if no motorcycles → skipped entirely
+        ph_px = rider.bbox[3] - rider.bbox[1]   # pixel height of this rider
+
+        # Guard: person box too small → too far from camera to evaluate helmet reliably.
+        # At < 55px tall, the head region is only ~16px — helmet model outputs at this
+        # resolution are unreliable and almost always produce false "no_helmet" calls.
+        # Mark as "unclear" (benefit of the doubt) rather than auto-flagging.
+        if ph_px < MIN_PERSON_HEIGHT_FOR_HELMET_PX:
+            helmet_calls.append("unclear")
+            logger.debug(
+                "Helmet check skipped for small rider (height=%.0fpx < %dpx threshold)",
+                ph_px, MIN_PERSON_HEIGHT_FOR_HELMET_PX,
+            )
+            continue
+
         head = _head_box(rider.bbox)
         if any(_iou(head, h.bbox) >= IOU_HELMET_HEAD_THRESHOLD for h in helmets):
             call: HelmetStatus = "helmet"
         elif any(_iou(head, nh.bbox) >= IOU_HELMET_HEAD_THRESHOLD for nh in no_helmets):
             call = "no_helmet"
         else:
-            call = "no_helmet" if rider.confidence >= 0.5 else "unclear"
+            # No helmet/no_helmet detection overlaps the head region.
+            # Default to "no_helmet" only for high-confidence riders (rider is clearly
+            # visible and close enough that we'd expect to see a helmet if there was one).
+            # For medium-confidence riders, "unclear" is safer.
+            call = "no_helmet" if rider.confidence >= 0.65 else "unclear"
         helmet_calls.append(call)
 
     if not helmet_calls:
@@ -292,7 +329,10 @@ def apply_rules(
         helmet_status: HelmetStatus = "unclear"
     else:
         counts = {s: helmet_calls.count(s) for s in ("helmet", "no_helmet", "unclear")}
-        helmet_status = max(counts, key=lambda k: (counts[k], k == "no_helmet"))
+        # Tiebreak update: when "unclear" and "no_helmet" tie, "unclear" wins.
+        # Rationale: we should not flag a person for a violation we cannot confirm.
+        helmet_status = max(counts, key=lambda k: (counts[k], k == "helmet", k == "unclear"))
+
 
     # ── Violations ────────────────────────────────────────────────────────────
     violations: List[str] = []

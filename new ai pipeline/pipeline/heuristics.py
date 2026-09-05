@@ -186,7 +186,21 @@ def phone_usage_detected(
 
 class ErraticDrivingDetector:
     """
-    Stateful per-track erratic driving detector.
+    Stateful per-track erratic driving detector with ego-motion (camera shake)
+    compensation.
+
+    Camera shake from speed bumps, hard braking, or rough roads causes ALL tracked
+    vehicles to shift simultaneously in the same direction — making each vehicle
+    appear to make a sudden lateral movement when in fact the camera moved.
+
+    Compensation strategy:
+      - Each frame, collect the lateral (x-axis) displacement for every tracked
+        vehicle that was also visible in the previous frame.
+      - Compute the MEDIAN of those displacements (≥3 vehicles needed for reliability).
+      - Subtract this median from each vehicle's individual displacement before
+        storing it in the centroid history used for erratic analysis.
+      - Result: camera motion cancels out; only vehicle-specific erratic movement
+        remains in the analysis window.
 
     Usage:
         detector = ErraticDrivingDetector()
@@ -194,9 +208,16 @@ class ErraticDrivingDetector:
             erratic_ids = detector.update(frame_tracked_dets)
     """
 
+    # Minimum number of simultaneously tracked vehicles required to estimate
+    # camera motion reliably.  With fewer vehicles, compensation is skipped
+    # (single-vehicle scenes cannot distinguish camera from vehicle motion).
+    MIN_VEHICLES_FOR_COMPENSATION: int = 3
+
     def __init__(self) -> None:
-        # track_id → deque of (cx, cy) centroids
+        # track_id → deque of (compensated_cx, cy)
         self._history: dict[int, deque[tuple[float, float]]] = {}
+        # track_id → last raw (cx, cy) — for computing per-frame deltas
+        self._last_pos: dict[int, tuple[float, float]] = {}
         self._vehicle_classes = {
             "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
             "auto_rickshaw", "vehicle",
@@ -207,23 +228,57 @@ class ErraticDrivingDetector:
         Update track histories and return set of track IDs showing erratic motion.
         tracked_dets: list[TrackedDetection] from tracker.py
         """
-        erratic_ids: set[int] = set()
-
+        # ── Step 1: collect current raw centroids for all tracked vehicles ────
+        current_raw: dict[int, tuple[float, float]] = {}
         for det in tracked_dets:
             tid = getattr(det, "track_id", -1)
             if tid < 0:
                 continue
             if getattr(det, "class_name", "") not in self._vehicle_classes:
                 continue
-
             x1, y1, x2, y2 = det.bbox
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
+            current_raw[tid] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+        # ── Step 2: compute camera motion as median lateral displacement ───────
+        lateral_deltas: list[float] = []
+        for tid, (cx, cy) in current_raw.items():
+            if tid in self._last_pos:
+                prev_cx, _ = self._last_pos[tid]
+                dx = cx - prev_cx
+                # Only count significant moves — ignore tracker jitter
+                if abs(dx) >= ERRATIC_MIN_STEP_PX:
+                    lateral_deltas.append(dx)
+
+        camera_dx = 0.0
+        if len(lateral_deltas) >= self.MIN_VEHICLES_FOR_COMPENSATION:
+            lateral_deltas.sort()
+            mid = len(lateral_deltas) // 2
+            camera_dx = lateral_deltas[mid]
+            if abs(camera_dx) > 5.0:   # only compensate for meaningful camera motion
+                logger.debug(
+                    "Erratic detector: camera_dx=%.1fpx compensated (from %d vehicles)",
+                    camera_dx, len(lateral_deltas),
+                )
+
+        # ── Step 3: update compensated histories and analyse ──────────────────
+        erratic_ids: set[int] = set()
+
+        for tid, (cx, cy) in current_raw.items():
+            # Apply compensation: subtract camera motion from the vehicle's x movement.
+            if tid in self._last_pos:
+                prev_cx, prev_cy = self._last_pos[tid]
+                dx_raw  = cx - prev_cx
+                dx_comp = dx_raw - camera_dx           # ego-motion removed
+                comp_cx = prev_cx + dx_comp            # reconstructed compensated position
+            else:
+                comp_cx = cx                           # first sighting — no delta yet
 
             if tid not in self._history:
                 self._history[tid] = deque(maxlen=ERRATIC_WINDOW_FRAMES)
-            self._history[tid].append((cx, cy))
+            self._history[tid].append((comp_cx, cy))
+            self._last_pos[tid] = (cx, cy)             # store RAW for next frame's delta
 
+            # Analyse only when history window is full
             if len(self._history[tid]) < ERRATIC_WINDOW_FRAMES:
                 continue
 
@@ -249,12 +304,12 @@ class ErraticDrivingDetector:
             )
             xs = [p[0] for p in pts]
             lateral_range = max(xs) - min(xs)
-            path_length = sum(math.hypot(dx, dy) for dx, dy in vectors)
+            path_length   = sum(math.hypot(dx, dy) for dx, dy in vectors)
 
             if (
-                sign_changes >= ERRATIC_MIN_SIGN_CHANGES
+                sign_changes  >= ERRATIC_MIN_SIGN_CHANGES
                 and lateral_range >= ERRATIC_MIN_LATERAL_RANGE_PX
-                and path_length >= ERRATIC_MIN_PATH_PX
+                and path_length   >= ERRATIC_MIN_PATH_PX
             ):
                 logger.info(
                     "Erratic driving: track_id=%d sign_changes=%d lateral_range=%.1f path=%.1f",

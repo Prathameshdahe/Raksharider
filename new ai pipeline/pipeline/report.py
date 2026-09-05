@@ -47,6 +47,7 @@ def build_report(
     run_id:               Optional[str] = None,
     track_history:        Optional[Dict] = None,   # {track_id: track_info_dict}
     vehicles_detected:    Optional[List[Dict[str, Any]]] = None,
+    vehicle_records:      Optional[List[Dict[str, Any]]] = None,  # VehicleStateRegistry export
 ) -> Dict[str, Any]:
     """
     Build the final JSON-serialisable report dict and save evidence frames.
@@ -151,6 +152,33 @@ def build_report(
     if track_history:
         report["vehicle"]["track_ids"] = sorted(track_history.keys())
         _save_track_log(run_id, track_history, out_dir)
+
+    # Attach per-vehicle track-centric report (vehicles_v2) when registry data
+    # is available. This is the full vehicle-brain output with confirmed
+    # violations, plate, class, and reasoning per violation type.
+    if vehicle_records is not None:
+        report["vehicles_v2"] = vehicle_records
+        # Enrich all_tracked_vehicles with confirmed violations from registry
+        vr2_by_tid = {v["track_id"]: v for v in vehicle_records}
+        enriched = []
+        for vd in (vehicles_detected or []):
+            tid = vd.get("track_id", -1)
+            if tid in vr2_by_tid:
+                vd = {
+                    **vd,
+                    "confirmed_violations": vr2_by_tid[tid].get("confirmed_violations", []),
+                    "vehicle_class_stable": vr2_by_tid[tid].get("class_stable", False),
+                }
+            enriched.append(vd)
+        report["vehicle"]["all_tracked_vehicles"] = enriched
+
+        # Count vehicles with confirmed violations for the summary
+        n_with_violation = sum(1 for v in vehicle_records if v.get("has_violation"))
+        report["summary"] = {
+            "total_vehicles_tracked": len(vehicle_records),
+            "vehicles_with_violations": n_with_violation,
+            "vehicles_clean": len(vehicle_records) - n_with_violation,
+        }
 
     # Save report.json
     report_path = out_dir / "report.json"
