@@ -1,103 +1,68 @@
-# ── Python / FastAPI Backend ───────────────────────────────────────────────────
+# ─── Python ────────────────────────────────────────────────────────────────
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-*.egg
 *.egg-info/
 dist/
 build/
-*.so
-.venv/
+*.egg
+.eggs/
+
+# ─── Virtual environments ───────────────────────────────────────────────────
 venv/
+venv311/
+.venv/
 env/
+ENV/
+
+# ─── Environment / secrets — NEVER commit these ────────────────────────────
 .env
-*.db
-*.sqlite
-*.sqlite3
-
-# ── Secrets & credentials ──────────────────────────────────────────────────────
-.env
-.env.*
-*.env
-secrets.yaml
-secrets.json
-config/secrets.*
-*.key
-*.pem
-*.p12
-*.pfx
-*_rsa
-*_rsa.pub
-*.token
-
-# ── YOLO / ML outputs (never commit these) ─────────────────────────────────────
-runs/
-new ai pipeline/runs/
-*.pt.tmp
-
-# ── Dataset splits (large; use Roboflow/Drive link instead) ───────────────────
-new ai pipeline/dataset/helmet_dataset/train/
-new ai pipeline/dataset/helmet_dataset/test/
-new ai pipeline/dataset/helmet_dataset/valid/
-# keep: data.yaml, README.dataset.txt, README.roboflow.txt
-
-# ── Dataset zip (host externally) ─────────────────────────────────────────────
-Motorcycle helmet.v1i.yolov8-obb.zip
-*.dataset.zip
-
-# ── Android / Kotlin Frontend ──────────────────────────────────────────────────
-frontend/.gradle/
-frontend/.idea/
-frontend/build/
-frontend/app/build/
-frontend/local.properties
-frontend/.kotlin/
-*.iml
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-*.aab
-*.dex
-
-# ── Firebase ───────────────────────────────────────────────────────────────────
-frontend/app/google-services.json
-
-# ── Node / Admin Portal ────────────────────────────────────────────────────────
-node_modules/
-.next/
 .env.local
-.env.production
+.env.*.local
+!.env.example
+!**/.env.example
 
-# ── Media & Videos ─────────────────────────────────────────────────────────────
-*.mp4
-*.mov
-*.avi
-*.mkv
+# ─── IDEs ───────────────────────────────────────────────────────────────────
+.gemini/
+.agents/
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# Allow sample test video and evidence showcase
-!new ai pipeline/tests/sample_videos/sample.mp4
-!evidence/
-!evidence/**
-
-# ── Evidence / Temporary Pipeline outputs ─────────────────────────────────────
-evidence_output/
-pipeline/evidence_output/
-new ai pipeline/pipeline/evidence_output/
-new ai pipeline/dataset/
-dataset/
-
-
-# ── OS & Editor ────────────────────────────────────────────────────────────────
+# ─── OS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
-*.swp
-*.swo
-.vscode/settings.json
-.idea/
-*.log
-*.tmp
-*.bak
 
+# ─── Testing ────────────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─── Node / Vercel ──────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.vercel/
+
+# ─── Backend: local uploads ─────────────────────────────────────────────────
+backend/uploads/
+DriveTrust-Backend/uploads/
+
+# ─── AI Pipeline: large files / outputs (runs and generated output) ──────────
+new ai pipeline/pipeline/evidence_output/
+new ai pipeline/runs/
+new ai pipeline/dataset/
+new ai pipeline/training/
+evidence/
+
+# ─── Logs ───────────────────────────────────────────────────────────────────
+*.log
+logs/

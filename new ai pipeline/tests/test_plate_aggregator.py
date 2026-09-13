@@ -7,12 +7,25 @@ logic that decides whether a track is strong enough or needs escalation.
 
 from __future__ import annotations
 
+import json
+import shutil
 import sys
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.plate_aggregator import PlateAggregator, RawOCRRead
+
+
+def _repo_tmp_dir(name: str) -> Path:
+    path = Path(__file__).parent / "_tmp" / name
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
 
 
 def _read(text: str, conf: float = 0.8, valid: bool = True, tier: str = "easyocr") -> RawOCRRead:
@@ -106,4 +119,115 @@ def test_positional_consensus_declines_on_tied_positions():
 
     assert resolution.plate_text in ("MH01DP4248", "MH01BD1383")
     assert resolution.agreement == 0.5
+
+
+def test_zoomed_crops_are_saved_for_plate_candidates():
+    out_dir = _repo_tmp_dir("zoomed_crops")
+    aggregator = PlateAggregator()
+    frame = np.full((120, 220, 3), 255, dtype=np.uint8)
+    aggregator.add_candidate(
+        track_id=4,
+        frame_bgr=frame,
+        plate_bbox=[50, 40, 150, 65],
+        timestamp=1.5,
+        frame_index=3,
+        detector_confidence=0.91,
+    )
+
+    crop_map = aggregator.save_zoomed_crops(out_dir)
+
+    assert 4 in crop_map
+    crop_path = Path(crop_map[4][0]["path"])
+    assert crop_path.exists()
+    saved = cv2.imread(str(crop_path))
+    assert saved is not None
+    assert saved.shape[0] >= 120
+
+
+def test_learning_log_records_weak_conflicting_reads():
+    out_dir = _repo_tmp_dir("learning_log")
+    aggregator = PlateAggregator()
+    frame = np.full((120, 220, 3), 255, dtype=np.uint8)
+    aggregator.add_candidate(
+        track_id=7,
+        frame_bgr=frame,
+        plate_bbox=[50, 40, 150, 65],
+        timestamp=0.0,
+        frame_index=0,
+        detector_confidence=0.80,
+    )
+    aggregator._reads[7].extend([
+        _read("MH01DP4248", conf=0.88),
+        _read("MH01BD1383", conf=0.90, tier="paddleocr"),
+    ])
+    resolutions = aggregator.resolve_all()
+    aggregator.save_zoomed_crops(out_dir)
+
+    log_path = aggregator.write_learning_log(
+        out_dir,
+        resolutions,
+        vehicle_track_labels={7: "car"},
+    )
+
+    assert log_path is not None
+    lines = Path(log_path).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    sample = json.loads(lines[0])
+    assert sample["track_id"] == 7
+    assert sample["vehicle_class"] == "car"
+    assert len(sample["ocr_reads"]) == 2
+    assert sample["crops"][0]["path"]
+
+
+def test_scan_pending_candidates_prioritizes_and_caps(monkeypatch):
+    aggregator = PlateAggregator()
+    frame = np.full((120, 220, 3), 255, dtype=np.uint8)
+
+    # Add candidates across tracks
+    aggregator.add_candidate(
+        track_id=1,
+        frame_bgr=frame,
+        plate_bbox=[10, 10, 60, 40],
+        timestamp=1.0,
+        frame_index=1,
+        detector_confidence=0.50,
+        source="vehicle_roi",
+    )
+    aggregator.add_candidate(
+        track_id=2,
+        frame_bgr=frame,
+        plate_bbox=[10, 10, 60, 40],
+        timestamp=1.0,
+        frame_index=1,
+        detector_confidence=0.85,
+        source="plate_detector",
+    )
+    aggregator.add_candidate(
+        track_id=3,
+        frame_bgr=frame,
+        plate_bbox=[10, 10, 60, 40],
+        timestamp=1.0,
+        frame_index=1,
+        detector_confidence=0.90,
+        source="vehicle_roi",
+    )
+
+    scanned_tracks = []
+
+    def fake_scan(candidate, use_vlm=True):
+        scanned_tracks.append(candidate.track_id)
+        return [_read("MH12AB1234", conf=0.9)]
+
+    monkeypatch.setattr(aggregator, "_scan_candidate", fake_scan)
+
+    recovered = aggregator.scan_pending_candidates(
+        use_vlm=False,
+        per_track_limit=1,
+        max_total_candidates=2,
+    )
+
+    # Should prioritize plate_detector (track 2), then highest confidence (track 3), capped at 2
+    assert len(recovered) == 2
+    assert scanned_tracks == [2, 3]
+
 

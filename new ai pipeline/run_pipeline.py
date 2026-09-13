@@ -1,7 +1,7 @@
-"""
+﻿"""
 run_pipeline.py
 ---------------
-CLI entry point for the DriveTrust AI detection pipeline — v2.
+CLI entry point for the DriveTrust AI detection pipeline ΓÇö v2.
 
 Usage:
     python run_pipeline.py <video_or_image> [options]
@@ -21,9 +21,9 @@ Stages (v2):
     2. YOLO detection           4 models: COCO + helmet + plate + vehicle-class
     3. ByteTrack (--track)      persistent vehicle IDs
     4. Rule engine + heuristics rider count, helmet, phone, wheelie, erratic, signal
-    5. OCR                      plate crop → EasyOCR → Indian format validator
+    5. OCR                      plate crop ΓåÆ EasyOCR ΓåÆ Indian format validator
     6. Aggregation              clip-level status + severity
-    7. VLM tiebreaker (--vlm)   Gemini Vision — fires only on needs_review
+    7. VLM tiebreaker (--vlm)   Gemini Vision ΓÇö fires only on needs_review
     8. Report                   report.json + track_log.json + evidence JPEGs
 """
 
@@ -44,7 +44,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 except ImportError:
-    pass   # dotenv optional — key can be set via shell env instead
+    pass   # dotenv optional ΓÇö key can be set via shell env instead
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -111,7 +111,7 @@ def run(
     print(f"  VLM          : {'enabled (Gemini Vision)' if use_vlm else 'disabled'}")
     print(f"  Output       : {output_dir}/")
 
-    # ── Stage 1: Frame extraction ─────────────────────────────────────────────
+    # ΓöÇΓöÇ Stage 1: Frame extraction ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(1, "Frame Extraction")
     frames = extract_frames(source, sample_interval=interval)
     print(f"    {len(frames)} frame(s) extracted")
@@ -119,7 +119,7 @@ def run(
         print("  ERROR: No frames extracted. Check the source file.", file=sys.stderr)
         return None
 
-    # ── Stage 2: Detection (all 4 models) ────────────────────────────────────
+    # ΓöÇΓöÇ Stage 2: Detection (all 4 models) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(2, "YOLO Detection (COCO | helmet | plate | vehicle-class)")
     frame_detections = detect_frames(frames)
     class_counts: dict = {}
@@ -131,14 +131,14 @@ def run(
     for cls, cnt in sorted(class_counts.items()):
         print(f"      {cls}: {cnt}")
 
-    # ── Stage 3: ByteTrack ────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Stage 3: ByteTrack ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(3, "ByteTrack Tracking" if use_tracker else "ByteTrack (skipped)")
     track_results: dict[float, list] = {}
     tracker        = Tracker()
     total_track_ids = 0
     track_history: dict = {}
 
-    # Shared per-vehicle state registry — all stages write observations here.
+    # Shared per-vehicle state registry ΓÇö all stages write observations here.
     registry = VehicleStateRegistry()
 
     # Accumulate-then-vote vehicle class aggregator (fixes Bug 2.4).
@@ -192,7 +192,7 @@ def run(
                 "violations_on_track": [],    # back-filled after Stage 4
             }
 
-        # ── Bug 2.3 fix: fill avg_confidence from accumulated track detections
+        # ΓöÇΓöÇ Bug 2.3 fix: fill avg_confidence from accumulated track detections
         # track_results holds every TrackedDetection with its .confidence score.
         # Accumulate per-track sum + count, then normalize.
         _conf_sum:   dict[int, float] = {}
@@ -222,11 +222,11 @@ def run(
             )
             if cr.flip_flopped:
                 print(f"      Track {tid}: class flip-flop ({cr.resolved_class} "
-                      f"vs {cr.runner_up}) — treating as unstable")
+                      f"vs {cr.runner_up}) ΓÇö treating as unstable")
     else:
         print("    Skipped (use --track to enable)")
 
-    # ── Stage 4: Rule engine + heuristics ────────────────────────────────────
+    # ΓöÇΓöÇ Stage 4: Rule engine + heuristics ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(4, "Rule Engine + Heuristics")
     wd = WheelieDetector()
     ed = ErraticDrivingDetector()
@@ -252,9 +252,9 @@ def run(
     if wheelie_frames: print(f"      Wheelie:     {wheelie_frames}/{len(frames)} frames")
     if erratic_frames: print(f"      Erratic:     {erratic_frames}/{len(frames)} frames")
 
-    # ── Feed per-frame violation observations into VehicleStateRegistry ──────
+    # ΓöÇΓöÇ Feed per-frame violation observations into VehicleStateRegistry ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     # Map each FrameVerdict's violations to the tracks that were present in
-    # that frame — so every observation is keyed by track_id, not frame index.
+    # that frame ΓÇö so every observation is keyed by track_id, not frame index.
     # This is the "shared vehicle brain" step: observations accumulate here and
     # are resolved at clip end (Stage 6 output is NOT changed by this).
     _VIOLATION_KEYS = {
@@ -361,7 +361,7 @@ def run(
         for tid, viols in _track_violations.items():
             track_history[tid]["violations_on_track"] = sorted(viols)
 
-    # Subject-vehicle identification — needed before OCR resolution so a
+    # Subject-vehicle identification ΓÇö needed before OCR resolution so a
     # plate read on the flagged vehicle's own track outranks a cleaner read
     # on an unrelated bystander vehicle (see plate attribution below).
     dominant_vehicle_type = resolve_dominant_vehicle_type(frame_verdicts)
@@ -375,8 +375,8 @@ def run(
                 if prev is None or det.class_name != "vehicle":
                     vehicle_track_labels[det.track_id] = det.class_name
 
-    # ── Stage 5: OCR (3-tier track-keyed aggregation) ────────────────────────
-    _stage(5, "License Plate OCR (ampr.pt -> EasyOCR -> PaddleOCR -> Gemini VLM)")
+    # Stage 5: OCR (parallel track-keyed aggregation)
+    _stage(5, "License Plate OCR (zoom crop + EasyOCR | PaddleOCR | VLM consensus)")
     aggregator = PlateAggregator()
 
     for i, fd in enumerate(frame_detections):
@@ -384,17 +384,21 @@ def run(
         tracked_in_frame = track_results.get(fd.timestamp, []) if use_tracker else []
         for plate in sorted(plates, key=lambda d: d.confidence, reverse=True):
             track_id = find_nearest_track_id(plate.bbox, tracked_in_frame) or -1
-            raw = aggregator.add_raw_read(
+            reads = aggregator.add_parallel_reads(
                 track_id=track_id,
                 frame_bgr=frames[i].image,
                 plate_bbox=plate.bbox,
                 timestamp=fd.timestamp,
                 frame_index=i,
                 detector_confidence=plate.confidence,
+                use_vlm=True,
             )
-            if raw:
+            for raw in reads:
                 status_lbl = "valid" if raw.is_valid else "invalid format"
-                print(f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] -> '{raw.text}' [{status_lbl}]")
+                print(
+                    f"      t={fd.timestamp:.2f}s [track {track_id:>3d}] "
+                    f"{raw.tier}/{raw.source} -> '{raw.text}' [{status_lbl}]"
+                )
 
         if use_tracker:
             plate_track_ids = {
@@ -416,17 +420,16 @@ def run(
                     frame_index=i,
                 )
 
-    # Improvement pass: strengthen weak EasyOCR results and recover missed plate boxes.
-    for tid in aggregator.track_ids():
-        if tid < 0:
-            continue
-        if aggregator.needs_escalation(tid):
-            added_reads = aggregator.improve_track(tid, use_vlm=True)
-            for raw in added_reads:
-                status_lbl = "valid" if raw.is_valid else "invalid format"
-                print(f"      [{raw.tier} {raw.source} track {tid}] -> '{raw.text}' [{status_lbl}]")
+    recovered_reads = aggregator.scan_pending_candidates(
+        use_vlm=True,
+        per_track_limit=1,
+        max_total_candidates=12,
+    )
+    for tid, raw in recovered_reads:
+        status_lbl = "valid" if raw.is_valid else "invalid format"
+        print(f"      [{raw.tier}/{raw.source} track {tid}] -> '{raw.text}' [{status_lbl}]")
 
-    # ── Car track fragment merger (plate-similarity + time compatibility) ──
+    # ΓöÇΓöÇ Car track fragment merger (plate-similarity + time compatibility) ΓöÇΓöÇ
     if use_tracker and track_history:
         car_merger = TrackMerger()
         raw_reads_map = aggregator.raw_reads_by_track()
@@ -461,6 +464,17 @@ def run(
 
     # Final resolution: pick best plate across all tracks
     resolutions = aggregator.resolve_all()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plate_crop_map = aggregator.save_zoomed_crops(output_dir, per_track_limit=3)
+    plate_learning_log = aggregator.write_learning_log(
+        output_dir,
+        resolutions,
+        vehicle_track_labels=vehicle_track_labels,
+    )
+    if plate_crop_map:
+        print(f"    Plate crops saved: {sum(len(v) for v in plate_crop_map.values())} crop(s)")
+    if plate_learning_log:
+        print(f"    Plate learning log: {plate_learning_log}")
     plate_by_track = {
         tid: res.plate_text
         for tid, res in resolutions.items()
@@ -468,9 +482,9 @@ def run(
     }
     subject_track_ids = {tid for tid, cls in vehicle_track_labels.items() if cls == dominant_vehicle_type}
 
-    # ── State-code filter (Bug 2.5 fix) ────────────────────────────────────
+    # ΓöÇΓöÇ State-code filter (Bug 2.5 fix) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     # Before picking the best plate, build a candidate list where each
-    # (track_id, plate_text) pair is scored by agreement — then use
+    # (track_id, plate_text) pair is scored by agreement ΓÇö then use
     # best_plate_candidate() to prefer real Indian state codes over
     # format-valid-but-impossible codes (e.g. HH vs MH).
     all_plate_candidates = [
@@ -490,21 +504,21 @@ def run(
             and not is_real_state_code(best_resolution.plate_text or "")
         ):
             print(f"    State-code filter override: "
-                  f"'{best_resolution.plate_text}' → '{state_filtered[0]}'")
+                  f"'{best_resolution.plate_text}' ΓåÆ '{state_filtered[0]}'")
             number_plate  = state_filtered[0]
             ocr_agreement = state_filtered[1]
         else:
             number_plate  = best_resolution.plate_text
             ocr_agreement = best_resolution.agreement
         print(f"    Final plate: {number_plate or '<unreadable>'}  "
-              f"(agreement {ocr_agreement:.0%}, tier={best_resolution.winning_tier}, "
+              f"(agreement {ocr_agreement:.0%}, engine={best_resolution.winning_tier}, "
               f"valid_reads={best_resolution.valid_reads}/{best_resolution.total_reads})")
     else:
         number_plate  = None
         ocr_agreement = 0.0
         print("    Final plate: <unreadable> (no detections)")
 
-    # ── Push plate results into VehicleStateRegistry ─────────────────────
+    # ΓöÇΓöÇ Push plate results into VehicleStateRegistry ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     if use_tracker:
         for tid, res in resolutions.items():
             if tid >= 0:
@@ -531,8 +545,9 @@ def run(
             "plate_agreement": round(resolutions[tid].agreement, 4) if tid in resolutions else 0.0,
             "valid_plate_reads": resolutions[tid].valid_reads if tid in resolutions else 0,
             "total_plate_reads": resolutions[tid].total_reads if tid in resolutions else 0,
-            "ocr_tier": resolutions[tid].winning_tier if tid in resolutions else "none",
+            "ocr_engine": resolutions[tid].winning_tier if tid in resolutions else "none",
             "ocr_needs_review": bool(resolutions[tid].needs_review) if tid in resolutions else True,
+            "plate_crops": plate_crop_map.get(tid, []),
         }
         for tid, cls in sorted(vehicle_track_labels.items())
     ]
@@ -545,7 +560,7 @@ def run(
     ]
 
 
-    # ── Stage 6: Aggregation ──────────────────────────────────────────────────
+    # ΓöÇΓöÇ Stage 6: Aggregation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(6, "Aggregation & Severity Scoring")
     vr = aggregate_verdicts(
         frame_verdicts,
@@ -560,12 +575,12 @@ def run(
     print(f"    Status            : {vr.status}")
     print(f"    Violations        : {vr.violations_detected or 'none'}")
 
-    # ── Stage 7: VLM tiebreaker ───────────────────────────────────────────────
+    # ΓöÇΓöÇ Stage 7: VLM tiebreaker ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     from pipeline.vlm import check_vlm_available
     vlm_auto = (not use_vlm) and vr.status == "needs_review" and check_vlm_available()
     vlm_active = use_vlm or vlm_auto
     if vlm_auto:
-        print(f"  [{7}/{STAGES}] VLM Tiebreaker (auto-escalated — needs_review + VLM available)")
+        print(f"  [{7}/{STAGES}] VLM Tiebreaker (auto-escalated ΓÇö needs_review + VLM available)")
     else:
         _stage(7, "VLM Tiebreaker" + (" (Gemini Vision)" if use_vlm else " (skipped)"))
 
@@ -593,7 +608,7 @@ def run(
                     "vehicle_type":        vr.vehicle_type,
                 }
                 old_status = vr.status
-                # Compute which violations were confirmed in ≥3 frames
+                # Compute which violations were confirmed in ΓëÑ3 frames
                 # so the VLM cannot downgrade those high-confidence detections.
                 HIGH_CONF_MIN_FRAMES = 3
                 viol_frame_counts: dict[str, int] = {}
@@ -605,7 +620,7 @@ def run(
                     if cnt >= HIGH_CONF_MIN_FRAMES
                 }
                 if locked_violations:
-                    print(f"    VLM: high-confidence violations locked (seen ≥{HIGH_CONF_MIN_FRAMES} frames): "
+                    print(f"    VLM: high-confidence violations locked (seen ΓëÑ{HIGH_CONF_MIN_FRAMES} frames): "
                           f"{sorted(locked_violations)}")
 
                 try:
@@ -613,21 +628,21 @@ def run(
                     print(f"    VLM verdict: {old_status} -> {new_status}")
                     print(f"    Reasoning  : {reasoning}")
                     # Guard: if high-confidence violations exist, VLM can only
-                    # confirm or escalate — never downgrade to insufficient_evidence.
+                    # confirm or escalate ΓÇö never downgrade to insufficient_evidence.
                     if locked_violations and new_status == "insufficient_evidence":
                         logger.info(
                             "VLM downgrade blocked: locked violations %s prevent "
                             "status drop to 'insufficient_evidence'.",
                             sorted(locked_violations),
                         )
-                        print(f"    VLM downgrade blocked (locked violations present) — "
+                        print(f"    VLM downgrade blocked (locked violations present) ΓÇö "
                               f"retaining '{old_status}'")
                         new_status = old_status
                     vr.status        = new_status
                     vr.vlm_reasoning = reasoning
                 except Exception as vlm_exc:
                     vlm_error = f"VLM call failed: {vlm_exc}"
-                    logger.warning("VLM tiebreaker error — retaining '%s': %s", vr.status, vlm_exc)
+                    logger.warning("VLM tiebreaker error ΓÇö retaining '%s': %s", vr.status, vlm_exc)
                     print(f"    VLM error: {vlm_error}")
 
                 if vr.status != old_status:
@@ -651,7 +666,7 @@ def run(
     else:
         print("    Skipped (use --vlm to enable, fires only on needs_review)")
 
-    # ── Stage 8: Report ───────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Stage 8: Report ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     _stage(8, "Report & Evidence Frames")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -674,6 +689,8 @@ def run(
         vehicles_detected=vehicles_detected,
         vehicle_records=vehicle_records,   # VehicleStateRegistry full export
     )
+    if plate_learning_log:
+        report["plate_learning_log"] = plate_learning_log
 
     # Save annotated evidence frames
     annotated_paths = []
@@ -729,7 +746,7 @@ def run(
     if track_history:
         print(f"    Track log    : {output_dir / 'track_log.json'}")
 
-    # ── Final summary ─────────────────────────────────────────────────────────
+    # ΓöÇΓöÇ Final summary ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     elapsed    = time.time() - t_start
     status_col = STATUS_COLOURS.get(vr.status, "")
     violations = ", ".join(vr.violations_detected) if vr.violations_detected else "None"
@@ -781,7 +798,7 @@ def main():
     parser.add_argument("--interval",      type=float, default=0.5,
                         help="Seconds between sampled frames (default: 0.5)")
     parser.add_argument("--out",           type=str,   default=None,
-                        help="Output directory (default: pipeline/evidence_output/latest — overwritten each run)")
+                        help="Output directory (default: pipeline/evidence_output/latest ΓÇö overwritten each run)")
     parser.add_argument("--track",         action="store_true",
                         help="Enable ByteTrack persistent vehicle ID assignment (recommended)")
     parser.add_argument("--vlm",           action="store_true",
@@ -805,7 +822,7 @@ def main():
         import shutil
         if LATEST_DIR.exists():
             shutil.rmtree(LATEST_DIR)
-            print(f"  (Cleared previous run — {LATEST_DIR})")
+            print(f"  (Cleared previous run ΓÇö {LATEST_DIR})")
         out_dir = LATEST_DIR
 
     run(
