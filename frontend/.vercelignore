@@ -1,0 +1,11 @@
+# Files too large for Vercel free tier (100MB limit)
+logo.webm
+logo-white.webm
+logo-animation.mp4
+
+# Data files (served dynamically)
+data/
+
+# Dev artifacts
+*.DS_Store
+Thumbs.db

@@ -9,10 +9,10 @@ Inspired by the ANPR-System-main approach (github.com/Tkvmaster/ANPR-System):
     vehicle's tracked lifetime and resolve at clip-end
   - Track ID comes from ByteTrack (already in tracker.py)
 
-Three-tier escalation (cheap → better → VLM):
-  Tier 1: EasyOCR       (fast, local, runs on every frame)
-  Tier 2: PaddleOCR     (stronger on structured text; runs only when EasyOCR fails regex)
-  Tier 3: Gemini vision (VLM plate reader; runs only when both OCR tiers fail)
+Parallel OCR evidence collection:
+  - EasyOCR, PaddleOCR, and Gemini vision can all inspect the same zoomed crop.
+  - The resolver compares every available read instead of waiting for one
+    engine to fail before trying the next one.
 
 Key insight from ANPR repo: get_best_ocr() logic — don't trust a single frame;
 aggregate across the full track lifetime and take majority/highest-confidence read.
@@ -24,7 +24,7 @@ Usage in run_pipeline.py (Stage 5):
         for plate_det in plates:
             # Find the track_id of the vehicle closest to this plate
             track_id = find_nearest_track_id(plate_det, tracked_dets)
-            aggregator.add_raw_read(track_id, frame.image, plate_det.bbox, fd.timestamp)
+            aggregator.add_parallel_reads(track_id, frame.image, plate_det.bbox, fd.timestamp)
 
     results = aggregator.resolve_all()   # one PlateResolution per track
     best = aggregator.best_result(results)
@@ -32,9 +32,13 @@ Usage in run_pipeline.py (Stage 5):
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -56,8 +60,10 @@ MIN_STRONG_PLATE_CONFIDENCE = 0.60
 MIN_STRONG_PLATE_AGREEMENT = 0.67
 MIN_STRONG_VALID_READS = 2
 MAX_CANDIDATES_PER_TRACK = 5
+MAX_OCR_WORKERS = 3
+LEARNING_LOG_NAME = "plate_learning_samples.jsonl"
 
-# ── Tier-2: PaddleOCR (optional) ─────────────────────────────────────────────
+# ── Optional PaddleOCR engine ────────────────────────────────────────────────
 _paddle_reader = None
 
 
@@ -70,9 +76,15 @@ def _get_paddle_reader():
             _paddle_reader = PaddleOCR(lang="en", show_log=False, use_angle_cls=True)
             logger.info("PaddleOCR reader ready.")
         except Exception as exc:
-            logger.info("PaddleOCR unavailable — Tier 2 disabled. Install/fix paddleocr to enable it. (%s)", exc)
+            logger.info("PaddleOCR unavailable — skipping that OCR engine. Install/fix paddleocr to enable it. (%s)", exc)
             _paddle_reader = False  # sentinel: tried, not available
     return _paddle_reader if _paddle_reader is not False else None
+
+
+def _vlm_plate_reader_available() -> bool:
+    """True when the Gemini VLM plate reader has an API key configured."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    return bool(api_key and not api_key.lower().startswith("your_"))
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -85,13 +97,13 @@ class RawOCRRead:
     text: str              # already cleaned + disambiguated
     confidence: float
     is_valid: bool         # matches Indian plate regex
-    tier: str              # 'easyocr' | 'paddleocr' | 'vlm'
+    tier: str              # OCR engine: 'easyocr' | 'paddleocr' | 'vlm'
     source: str = "plate_detector"
 
 
 @dataclass
 class PlateCandidate:
-    """Best crop candidate retained for a track for later OCR escalation."""
+    """Best crop candidate retained for a track for OCR and evidence export."""
     track_id: int
     frame_bgr: np.ndarray
     plate_bbox: List[float]
@@ -99,6 +111,7 @@ class PlateCandidate:
     frame_index: int
     detector_confidence: float
     source: str
+    crop_path: Optional[str] = None
 
 
 @dataclass
@@ -111,14 +124,14 @@ class PlateResolution:
     total_reads: int
     valid_reads: int
     is_validated: bool           # True if plate_text passes Indian regex
-    winning_tier: str            # which tier produced the winner
+    winning_tier: str            # which OCR engine produced the winner
     needs_review: bool = False   # True if weak/ambiguous even after escalation
 
 
 class PlateAggregator:
     """
     Collects plate OCR reads across frames keyed by ByteTrack track_id.
-    Call add_raw_read() once per detected plate per frame.
+    Call add_parallel_reads() once per detected plate per frame.
     Call resolve_all() at clip end to get final results.
     """
 
@@ -126,6 +139,7 @@ class PlateAggregator:
         # track_id -> list of raw reads
         self._reads: Dict[int, List[RawOCRRead]] = defaultdict(list)
         self._candidates: Dict[int, List[PlateCandidate]] = defaultdict(list)
+        self._scanned_candidate_keys: set[Tuple[int, int, str, Tuple[int, int, int, int]]] = set()
 
     def add_candidate(
         self,
@@ -136,11 +150,11 @@ class PlateAggregator:
         frame_index: int = 0,
         detector_confidence: float = 0.0,
         source: str = "plate_detector",
-    ) -> None:
-        """Retain the best crop candidates for a track so stronger OCR can retry them."""
+    ) -> Optional[PlateCandidate]:
+        """Retain the best crop candidates for a track."""
         crop = _crop_bbox(frame_bgr, plate_bbox)
         if crop is None or crop.size == 0:
-            return
+            return None
 
         candidate = PlateCandidate(
             track_id=track_id,
@@ -155,6 +169,39 @@ class PlateAggregator:
         candidates.append(candidate)
         candidates.sort(key=lambda c: c.detector_confidence, reverse=True)
         del candidates[MAX_CANDIDATES_PER_TRACK:]
+        return candidate
+
+    def add_parallel_reads(
+        self,
+        track_id: int,
+        frame_bgr: np.ndarray,
+        plate_bbox: List[float],
+        timestamp: float,
+        frame_index: int = 0,
+        detector_confidence: float = 1.0,
+        source: str = "plate_detector",
+        use_vlm: bool = True,
+    ) -> list[RawOCRRead]:
+        """
+        Run every available OCR engine on the same enhanced crop and record
+        every result. Missing engines are skipped without failing the run.
+        """
+        candidate = self.add_candidate(
+            track_id=track_id,
+            frame_bgr=frame_bgr,
+            plate_bbox=plate_bbox,
+            timestamp=timestamp,
+            frame_index=frame_index,
+            detector_confidence=detector_confidence,
+            source=source,
+        )
+        if candidate is None:
+            return []
+
+        reads = self._scan_candidate(candidate, use_vlm=use_vlm)
+        self._reads[track_id].extend(reads)
+        self._scanned_candidate_keys.add(_candidate_scan_key(candidate))
+        return reads
 
     def add_raw_read(
         self,
@@ -166,24 +213,10 @@ class PlateAggregator:
         detector_confidence: float = 1.0,
     ) -> Optional[RawOCRRead]:
         """
-        Run Tier-1 (EasyOCR) on the plate crop and record the result.
-        Returns the raw read, or None if crop/OCR failed.
-
-        Step 5 (plate_crop_enhancer): the OCR-facing crop is padded and
-        upscaled via enhance_plate_crop() before being passed to EasyOCR.
-        The candidate stored for Tier-2/3 escalation still uses the raw
-        frame + original bbox (so PaddleOCR / Gemini can re-crop as needed).
+        Compatibility wrapper for older callers.
+        Runs all available OCR engines and returns the strongest single read.
         """
-        # Zoom-then-read: pad 15%, upscale to 128px height
-        ocr_crop = enhance_plate_crop(frame_bgr, plate_bbox)
-        if ocr_crop is None:
-            # Fall back to raw crop if enhancer fails (e.g. bbox entirely OOB)
-            ocr_crop = _crop_bbox(frame_bgr, plate_bbox)
-        if ocr_crop is None:
-            return None
-
-        # Store raw (unenhanced) candidate for Tier-2/3 escalation
-        self.add_candidate(
+        reads = self.add_parallel_reads(
             track_id=track_id,
             frame_bgr=frame_bgr,
             plate_bbox=plate_bbox,
@@ -192,11 +225,7 @@ class PlateAggregator:
             detector_confidence=detector_confidence,
             source="plate_detector",
         )
-
-        raw = _easyocr_read(ocr_crop, timestamp, frame_index, source="plate_detector")
-        if raw is not None:
-            self._reads[track_id].append(raw)
-        return raw
+        return max(reads, key=_read_rank) if reads else None
 
     def add_vehicle_roi_candidate(
         self,
@@ -294,7 +323,7 @@ class PlateAggregator:
                     winning_tier = max(canonical_group, key=lambda r: r.confidence).tier
 
             logger.info(
-                "Track %d: plate='%s' (%d/%d valid reads, agreement=%.0f%%, tier=%s)",
+                "Track %d: plate='%s' (%d/%d valid reads, agreement=%.0f%%, engine=%s)",
                 track_id, winner, counter.get(winner, 0), len(valid_reads),
                 agreement * 100, winning_tier,
             )
@@ -330,7 +359,7 @@ class PlateAggregator:
 
     def resolve_all(self) -> Dict[int, PlateResolution]:
         """Resolve all tracks and return dict of track_id → PlateResolution."""
-        return {tid: self.resolve_track(tid) for tid in self._reads}
+        return {tid: self.resolve_track(tid) for tid in self.track_ids()}
 
     def best_result(
         self,
@@ -381,8 +410,7 @@ class PlateAggregator:
         frame_index: int = 0,
     ) -> Optional[RawOCRRead]:
         """
-        Run Tier-2 (PaddleOCR) on a specific crop and add to track reads.
-        Call this when EasyOCR failed regex validation on a track.
+        Compatibility helper: run PaddleOCR on a specific crop and add it.
         """
         paddle = _get_paddle_reader()
         if paddle is None:
@@ -410,8 +438,7 @@ class PlateAggregator:
         frame_index: int = 0,
     ) -> Optional[RawOCRRead]:
         """
-        Run Tier-3 (Gemini VLM) on a specific crop and add to track reads.
-        Only call when both EasyOCR and PaddleOCR failed.
+        Compatibility helper: run Gemini VLM on a specific crop and add it.
         """
         crop = _crop_bbox(frame_bgr, plate_bbox)
         if crop is None:
@@ -460,65 +487,262 @@ class PlateAggregator:
 
     def improve_track(self, track_id: int, use_vlm: bool = True) -> list[RawOCRRead]:
         """
-        Improve weak tracks by retrying best crops with PaddleOCR, then VLM.
-        This does not wait for total failure; low-confidence or low-agreement
-        EasyOCR results are also escalated.
+        Compatibility wrapper: scan the best unprocessed crop for this track
+        with every available OCR engine, then let consensus decide.
         """
         added: list[RawOCRRead] = []
         if not self.needs_escalation(track_id):
             return added
 
         for cand in self.best_candidates(track_id, limit=1):
-            if cand.source != "vehicle_roi":
+            key = _candidate_scan_key(cand)
+            if key in self._scanned_candidate_keys:
                 continue
-            if any(r.source == "vehicle_roi" for r in self._reads.get(track_id, [])):
-                continue
-            crop = _crop_bbox(cand.frame_bgr, cand.plate_bbox)
-            if crop is None:
-                continue
-            raw = _easyocr_read(
-                crop,
-                timestamp=cand.timestamp,
-                frame_index=cand.frame_index,
-                source="vehicle_roi",
-            )
-            if raw is not None:
-                self._reads[track_id].append(raw)
-                added.append(raw)
-            if not self.needs_escalation(track_id):
-                return added
-
-        for cand in self.best_candidates(track_id, limit=3):
-            raw = self.escalate_to_paddle(
-                track_id=track_id,
-                frame_bgr=cand.frame_bgr,
-                plate_bbox=cand.plate_bbox,
-                timestamp=cand.timestamp,
-                frame_index=cand.frame_index,
-            )
-            if raw is not None:
-                raw.source = cand.source
-                added.append(raw)
-            if not self.needs_escalation(track_id):
-                return added
-
-        if use_vlm and self.needs_escalation(track_id):
-            for cand in self.best_candidates(track_id, limit=1):
-                raw = self.escalate_to_vlm(
-                    track_id=track_id,
-                    frame_bgr=cand.frame_bgr,
-                    plate_bbox=cand.plate_bbox,
-                    timestamp=cand.timestamp,
-                    frame_index=cand.frame_index,
-                )
-                if raw is not None:
-                    raw.source = cand.source
-                    added.append(raw)
-                break
+            reads = self._scan_candidate(cand, use_vlm=use_vlm)
+            self._scanned_candidate_keys.add(key)
+            self._reads[track_id].extend(reads)
+            added.extend(reads)
         return added
 
+    def scan_pending_candidates(
+        self,
+        *,
+        use_vlm: bool = True,
+        per_track_limit: int = 1,
+        only_tracks_needing_review: bool = True,
+        max_total_candidates: int = 3,
+    ) -> list[tuple[int, RawOCRRead]]:
+        """
+        Scan retained candidates that have not already been OCR'd.
+        This mainly recovers vehicle-ROI plate crops for vehicles where the
+        dedicated plate detector missed the physical number plate.
+        Candidates are prioritized by confidence and capped to avoid slow runs.
+        """
+        added: list[tuple[int, RawOCRRead]] = []
+        pending: list[tuple[PlateCandidate, int]] = []
 
-# ── OCR tier implementations ──────────────────────────────────────────────────
+        for track_id in self.track_ids():
+            if track_id < 0:
+                continue
+            if only_tracks_needing_review and not self.needs_escalation(track_id):
+                continue
+            for cand in self.best_candidates(track_id, limit=per_track_limit):
+                key = _candidate_scan_key(cand)
+                if key in self._scanned_candidate_keys:
+                    continue
+                pending.append((cand, track_id))
+
+        # Prioritize true plate detector detections first, then highest confidence
+        pending.sort(
+            key=lambda item: (
+                1 if item[0].source == "plate_detector" else 0,
+                item[0].detector_confidence,
+            ),
+            reverse=True,
+        )
+
+        limit = max_total_candidates if max_total_candidates is not None and max_total_candidates > 0 else len(pending)
+        for cand, track_id in pending[:limit]:
+            key = _candidate_scan_key(cand)
+            if key in self._scanned_candidate_keys:
+                continue
+            reads = self._scan_candidate(cand, use_vlm=use_vlm)
+            self._scanned_candidate_keys.add(key)
+            if not reads:
+                continue
+            self._reads[track_id].extend(reads)
+            added.extend((track_id, read) for read in reads)
+        return added
+
+    def save_zoomed_crops(
+        self,
+        output_dir: Path,
+        *,
+        per_track_limit: int = 3,
+    ) -> Dict[int, List[Dict[str, object]]]:
+        """
+        Save enlarged plate crops for reviewer inspection and later training.
+        Returns a track_id keyed map suitable for embedding in report.json.
+        """
+        crop_dir = output_dir / "plate_crops"
+        crop_dir.mkdir(parents=True, exist_ok=True)
+
+        crop_map: Dict[int, List[Dict[str, object]]] = {}
+        for track_id in self.track_ids():
+            if track_id < 0:
+                continue
+            for cand in self.best_candidates(track_id, limit=per_track_limit):
+                crop = _enhanced_or_raw_crop(cand.frame_bgr, cand.plate_bbox, target_height=180)
+                if crop is None:
+                    continue
+                file_name = (
+                    f"track_{track_id:03d}_frame_{cand.frame_index:05d}_"
+                    f"{cand.source}.jpg"
+                )
+                crop_path = crop_dir / file_name
+                if not cv2.imwrite(str(crop_path), crop):
+                    logger.warning("Failed to save plate crop: %s", crop_path)
+                    continue
+                cand.crop_path = str(crop_path.resolve())
+                crop_map.setdefault(track_id, []).append({
+                    "path": cand.crop_path,
+                    "frame_index": cand.frame_index,
+                    "timestamp": round(cand.timestamp, 3),
+                    "source": cand.source,
+                    "detector_confidence": round(cand.detector_confidence, 4),
+                    "bbox": [round(float(v), 2) for v in cand.plate_bbox],
+                })
+        return crop_map
+
+    def write_learning_log(
+        self,
+        output_dir: Path,
+        resolutions: Dict[int, PlateResolution],
+        vehicle_track_labels: Optional[Dict[int, str]] = None,
+    ) -> Optional[str]:
+        """
+        Export weak, conflicting, and unreadable plate cases as JSONL.
+        This is the active-learning memory used for later review/fine-tuning.
+        """
+        samples = []
+        all_ids = set(self.track_ids()) | set(resolutions.keys())
+        for track_id in sorted(t for t in all_ids if t >= 0):
+            res = resolutions.get(track_id) or self.resolve_track(track_id)
+            reads = self._reads.get(track_id, [])
+            unique_texts = {r.text for r in reads if r.text}
+            should_log = (
+                res.needs_review
+                or not res.is_validated
+                or len(unique_texts) > 1
+                or res.valid_reads == 0
+            )
+            if not should_log:
+                continue
+            samples.append({
+                "track_id": track_id,
+                "vehicle_class": (vehicle_track_labels or {}).get(track_id, "unknown"),
+                "resolved_plate": res.plate_text,
+                "resolution": {
+                    "confidence": round(res.confidence, 4),
+                    "agreement": round(res.agreement, 4),
+                    "total_reads": res.total_reads,
+                    "valid_reads": res.valid_reads,
+                    "is_validated": res.is_validated,
+                    "ocr_engine": res.winning_tier,
+                    "needs_review": res.needs_review,
+                },
+                "ocr_reads": [
+                    {
+                        "text": r.text,
+                        "confidence": round(r.confidence, 4),
+                        "valid": r.is_valid,
+                        "ocr_engine": r.tier,
+                        "source": r.source,
+                        "frame_index": r.frame_index,
+                        "timestamp": round(r.timestamp, 3),
+                    }
+                    for r in reads
+                ],
+                "crops": [
+                    {
+                        "path": cand.crop_path,
+                        "frame_index": cand.frame_index,
+                        "timestamp": round(cand.timestamp, 3),
+                        "source": cand.source,
+                        "detector_confidence": round(cand.detector_confidence, 4),
+                        "bbox": [round(float(v), 2) for v in cand.plate_bbox],
+                    }
+                    for cand in self.best_candidates(track_id, limit=MAX_CANDIDATES_PER_TRACK)
+                ],
+            })
+
+        if not samples:
+            return None
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / LEARNING_LOG_NAME
+        with open(path, "w", encoding="utf-8") as f:
+            for sample in samples:
+                f.write(json.dumps(sample, ensure_ascii=False, default=str) + "\n")
+        return str(path.resolve())
+
+    def _scan_candidate(self, candidate: PlateCandidate, *, use_vlm: bool = True) -> list[RawOCRRead]:
+        crop = _enhanced_or_raw_crop(candidate.frame_bgr, candidate.plate_bbox)
+        if crop is None:
+            return []
+        return _run_ocr_engines(
+            crop,
+            timestamp=candidate.timestamp,
+            frame_index=candidate.frame_index,
+            source=candidate.source,
+            use_vlm=use_vlm,
+        )
+
+
+# ── OCR engine implementations ────────────────────────────────────────────────
+
+def _candidate_scan_key(candidate: PlateCandidate) -> Tuple[int, int, str, Tuple[int, int, int, int]]:
+    bbox_key = tuple(int(round(float(v))) for v in candidate.plate_bbox[:4])
+    return (candidate.track_id, candidate.frame_index, candidate.source, bbox_key)
+
+
+def _enhanced_or_raw_crop(
+    frame_bgr: np.ndarray,
+    plate_bbox: List[float],
+    *,
+    target_height: int = 128,
+) -> Optional[np.ndarray]:
+    crop = enhance_plate_crop(
+        frame_bgr,
+        plate_bbox,
+        padding_ratio=0.18,
+        target_height=target_height,
+    )
+    if crop is not None:
+        return crop
+    return _crop_bbox(frame_bgr, plate_bbox)
+
+
+def _run_ocr_engines(
+    crop: np.ndarray,
+    *,
+    timestamp: float,
+    frame_index: int,
+    source: str,
+    use_vlm: bool = True,
+) -> list[RawOCRRead]:
+    """
+    Run every configured OCR engine on one crop and return all successful reads.
+    Engines are independent opinions; PlateAggregator.resolve_track() decides.
+    """
+    tasks = [
+        ("easyocr", lambda: _easyocr_read(crop, timestamp, frame_index, source=source)),
+    ]
+
+    paddle = _get_paddle_reader()
+    if paddle is not None:
+        tasks.append(("paddleocr", lambda: _paddle_read(paddle, crop, timestamp, frame_index, source=source)))
+
+    if use_vlm and _vlm_plate_reader_available():
+        tasks.append(("vlm", lambda: _vlm_read(crop, timestamp, frame_index, source=source)))
+
+    if len(tasks) == 1:
+        read = tasks[0][1]()
+        return [read] if read is not None else []
+
+    reads: list[RawOCRRead] = []
+    with ThreadPoolExecutor(max_workers=min(MAX_OCR_WORKERS, len(tasks))) as executor:
+        futures = {executor.submit(fn): name for name, fn in tasks}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                read = future.result()
+            except Exception as exc:
+                logger.debug("%s OCR engine failed: %s", name, exc)
+                continue
+            if read is not None:
+                reads.append(read)
+    return reads
 
 def _easyocr_read(
     crop: np.ndarray,
@@ -526,7 +750,7 @@ def _easyocr_read(
     frame_index: int,
     source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
-    """Run EasyOCR (Tier 1) on a pre-cropped plate image."""
+    """Run EasyOCR on a pre-cropped plate image."""
     ALLOWED_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     variants = preprocess_plate_crop(crop)
     if not variants:
@@ -574,7 +798,7 @@ def _paddle_read(
     frame_index: int,
     source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
-    """Run PaddleOCR (Tier 2) on a pre-cropped plate image.
+    """Run PaddleOCR on a pre-cropped plate image.
 
     Adapted from ANPR-System-main filter_text() logic:
     - filter results by bounding-box area proportion
@@ -642,9 +866,8 @@ def _vlm_read(
     source: str = "plate_detector",
 ) -> Optional[RawOCRRead]:
     """
-    Run Gemini Vision (Tier 3) to read the license plate from a crop.
+    Run Gemini Vision to read the license plate from a crop.
     Reuses the existing Gemini client pattern from vlm.py.
-    Only called when both EasyOCR and PaddleOCR produce no valid read.
     """
     try:
         import os

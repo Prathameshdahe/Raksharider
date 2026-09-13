@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Python cache
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI outputs
+pipeline/evidence_output/
+uploads/
+
+# Large videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Models
+*.pt
+*.pth
+*.onnx
+
+# Misc
+.idea/
+.vercel
