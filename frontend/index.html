@@ -227,7 +227,7 @@ img{display:block;max-width:100%}
 }
 .login-sub{font-size:13px;color:rgba(251,250,247,.55);margin-bottom:22px;line-height:1.5}
 .field-wrap{position:relative;display:flex;align-items:center;margin-bottom:10px}
-.field-wrap svg{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none}
+.field-wrap > svg{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none}
 .field-wrap input{
   width:100%;background:rgba(18,21,28,.5);
   border:1px solid rgba(251,250,247,.16);border-radius:var(--r12);
@@ -238,11 +238,15 @@ img{display:block;max-width:100%}
 .field-wrap input:focus{border-color:var(--signal)}
 .field-wrap input::placeholder{color:rgba(251,250,247,.35)}
 .pw-toggle{
-  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  position:absolute;right:7px;top:50%;transform:translateY(-50%);
   width:34px;height:34px;background:none;border:0;padding:0;
   color:rgba(139,145,158,.8);display:flex;align-items:center;justify-content:center;
-  transition:color var(--transition);
+  cursor:pointer;transition:color var(--transition);
 }
+.pw-toggle svg{position:static;display:block;width:18px;height:18px;stroke:currentColor;pointer-events:none}
+.pw-toggle .icon-eye-off{display:none}
+.pw-toggle.revealed .icon-eye{display:none}
+.pw-toggle.revealed .icon-eye-off{display:block}
 .pw-toggle:hover{color:var(--warm)}
 .btn-signin{
   width:100%;margin-top:6px;background:var(--signal);color:var(--navy);
@@ -301,6 +305,16 @@ img{display:block;max-width:100%}
 }
 .badge-field{display:none}
 .badge-field.show{display:flex}
+.role-note{
+  font-size:11.5px;line-height:1.45;color:rgba(251,250,247,.45);
+  margin:-4px 0 12px;
+}
+.auth-error{
+  display:none;margin:10px 0 0;font-size:12px;line-height:1.45;
+  color:#ff8b72;
+}
+.auth-error.show{display:block}
+.field-wrap input.invalid{border-color:#ff5a3c}
 .auth-helper-text{
   font-size:11.5px;color:rgba(251,250,247,.45);margin-top:12px;line-height:1.4;text-align:center;
 }
@@ -849,8 +863,9 @@ img{display:block;max-width:100%}
       <div class="field-wrap" style="margin-bottom:0">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
         <input id="login-pw" type="password" placeholder="Password" autocomplete="current-password" data-has-toggle="true">
-        <button class="pw-toggle" onclick="togglePw('login-pw')" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        <button class="pw-toggle" onclick="togglePw('login-pw', this)" type="button" aria-label="Show password">
+          <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
         </button>
       </div>
       <button class="btn-signin" id="btn-submit-signin" onclick="doLogin()" style="margin-top:14px">Sign in</button>
@@ -880,28 +895,48 @@ img{display:block;max-width:100%}
           Traffic Officer
         </button>
       </div>
+      <p class="role-note" id="role-note">Citizen accounts can submit clips and track their own reviews.</p>
 
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        <input id="signup-name" type="text" placeholder="Full Name" autocomplete="name">
+        <input id="signup-name" type="text" placeholder="Full Name" autocomplete="name" aria-label="Full name">
       </div>
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/></svg>
-        <input id="signup-email" type="email" placeholder="you@example.com" autocomplete="email">
+        <input id="signup-email" type="email" placeholder="you@example.com" autocomplete="email" aria-label="Email address">
       </div>
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
         <input id="signup-pw" type="password" placeholder="Create password (min 6 chars)" autocomplete="new-password" data-has-toggle="true">
-        <button class="pw-toggle" onclick="togglePw('signup-pw')" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        <button class="pw-toggle" onclick="togglePw('signup-pw', this)" type="button" aria-label="Show password">
+          <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
         </button>
       </div>
-      <div class="field-wrap badge-field" id="wrap-badge-field">
+      <div class="field-wrap" style="margin-bottom:0">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
+        <input id="signup-pw2" type="password" placeholder="Confirm password" autocomplete="new-password" data-has-toggle="true" aria-label="Confirm password">
+        <button class="pw-toggle" onclick="togglePw('signup-pw2', this)" type="button" aria-label="Show password">
+          <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
+        </button>
+      </div>
+      <div class="field-wrap badge-field" id="wrap-badge-field" style="margin-top:10px">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <input id="signup-badge" type="text" placeholder="Officer / Badge ID (e.g. MH-TP-402)">
+        <input id="signup-badge" type="text" placeholder="Officer / Badge ID (e.g. MH-TP-402)" aria-label="Officer badge ID">
       </div>
 
-      <button class="btn-signin" id="btn-submit-signup" onclick="doSignUp()" style="margin-top:6px">Create Account</button>
+      <p class="auth-error" id="signup-error" role="alert"></p>
+
+      <button class="btn-signin" id="btn-submit-signup" onclick="doSignUp()" style="margin-top:14px">Create Account</button>
+
+      <div class="divider-or"><span>or sign up with</span></div>
+      <div class="social-btns">
+        <button class="btn-social" type="button" onclick="doGoogleLogin()">
+          <svg viewBox="0 0 24 24" style="width:15px;height:15px"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v18M3.6 8h16.8M3.6 16h16.8" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+          Google
+        </button>
+      </div>
       <div class="auth-helper-text">Already registered? <a href="#" onclick="switchAuthTab('signin'); return false;">Sign in instead</a></div>
     </div>
   </div>

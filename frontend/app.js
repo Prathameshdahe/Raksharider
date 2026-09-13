@@ -161,6 +161,16 @@ window.toggleLamp = function() {
 // ── Auth State & Handlers ──────────────────────────────────
 let currentUser = null;
 let selectedRole = 'citizen';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// Enter submits whichever auth view is on screen.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const field = e.target;
+  if (!field || field.tagName !== 'INPUT') return;
+  if (field.closest('#auth-view-signup')) { e.preventDefault(); doSignUp(); }
+  else if (field.closest('#auth-view-signin')) { e.preventDefault(); doLogin(); }
+});
 
 window.switchAuthTab = function(tab) {
   const isSignIn = tab === 'signin';
@@ -170,7 +180,38 @@ window.switchAuthTab = function(tab) {
   const vSignUp = document.getElementById('auth-view-signup');
   if (vSignIn) vSignIn.style.display = isSignIn ? 'block' : 'none';
   if (vSignUp) vSignUp.style.display = isSignIn ? 'none' : 'block';
+
+  // Leave no half-typed state behind: hide revealed passwords, clear errors.
+  clearSignUpError();
+  document.querySelectorAll('.pw-toggle.revealed').forEach(t => {
+    const input = t.parentElement?.querySelector('input');
+    if (input) input.type = 'password';
+    t.classList.remove('revealed');
+    t.setAttribute('aria-label', 'Show password');
+  });
+  document.querySelectorAll('.field-wrap input.invalid').forEach(i => i.classList.remove('invalid'));
 };
+
+function clearSignUpError() {
+  const box = document.getElementById('signup-error');
+  if (box) { box.textContent = ''; box.classList.remove('show'); }
+}
+
+// Clear the inline error as soon as the user starts correcting the field.
+document.addEventListener('input', (e) => {
+  const field = e.target;
+  if (!field?.closest?.('#auth-view-signup')) return;
+  field.classList.remove('invalid');
+  clearSignUpError();
+});
+
+function signUpError(message, fieldId) {
+  const box = document.getElementById('signup-error');
+  if (box) { box.textContent = message; box.classList.add('show'); }
+  else showToast(message);
+  const field = fieldId ? document.getElementById(fieldId) : null;
+  if (field) { field.classList.add('invalid'); field.focus(); }
+}
 
 window.selectRole = function(role) {
   selectedRole = role;
@@ -178,11 +219,23 @@ window.selectRole = function(role) {
   document.getElementById('role-officer')?.classList.toggle('active', role === 'officer');
   const badgeWrap = document.getElementById('wrap-badge-field');
   if (badgeWrap) badgeWrap.classList.toggle('show', role === 'officer');
+  const note = document.getElementById('role-note');
+  if (note) {
+    note.textContent = role === 'officer'
+      ? 'Officer access is reviewed by an admin — your account starts as a citizen until the badge ID is verified.'
+      : 'Citizen accounts can submit clips and track their own reviews.';
+  }
+  clearSignUpError();
 };
 
-window.togglePw = function(fieldId = 'login-pw') {
+window.togglePw = function(fieldId = 'login-pw', btn = null) {
   const pw = document.getElementById(fieldId);
-  if (pw) pw.type = pw.type === 'password' ? 'text' : 'password';
+  if (!pw) return;
+  const reveal = pw.type === 'password';
+  pw.type = reveal ? 'text' : 'password';
+  const toggle = btn || pw.parentElement?.querySelector('.pw-toggle');
+  toggle?.classList.toggle('revealed', reveal);
+  toggle?.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
 };
 
 function updateUserUI(user, profile) {
@@ -225,58 +278,78 @@ window.doSignUp = async function() {
   const nameEl  = document.getElementById('signup-name');
   const emailEl = document.getElementById('signup-email');
   const pwEl    = document.getElementById('signup-pw');
+  const pw2El   = document.getElementById('signup-pw2');
   const badgeEl = document.getElementById('signup-badge');
   const btn     = document.getElementById('btn-submit-signup');
 
   const name = nameEl?.value?.trim() || '';
-  const email = emailEl?.value?.trim() || '';
+  const email = (emailEl?.value || '').trim().toLowerCase();
   const password = pwEl?.value || '';
+  const confirm = pw2El?.value || '';
   const badge = (selectedRole === 'officer' && badgeEl) ? badgeEl.value.trim() : null;
 
-  if (!email || !password) {
-    showToast('Please enter an email and password');
-    return;
-  }
-  if (password.length < 6) {
-    showToast('Password must be at least 6 characters');
-    return;
+  clearSignUpError();
+  document.querySelectorAll('#auth-view-signup input.invalid').forEach(i => i.classList.remove('invalid'));
+
+  if (!name) return signUpError('Enter your full name.', 'signup-name');
+  if (!EMAIL_RE.test(email)) return signUpError('Enter a valid email address.', 'signup-email');
+  if (password.length < 6) return signUpError('Password must be at least 6 characters.', 'signup-pw');
+  if (password !== confirm) return signUpError('The two passwords do not match.', 'signup-pw2');
+  if (selectedRole === 'officer' && !badge) {
+    return signUpError('Enter your officer / badge ID so an admin can verify it.', 'signup-badge');
   }
 
   const sb = getSB();
   if (!sb) {
-    showToast('Connecting to authentication server...');
+    signUpError('Authentication service unavailable. Check your connection and try again.');
     return;
   }
 
   if (btn) { btn.textContent = 'Creating account…'; btn.disabled = true; }
 
   try {
+    // Roles are never self-granted: the account is created as a citizen and an
+    // officer request is recorded for an admin to approve (see the
+    // handle_new_user trigger in backend/database/auth_admin_setup.sql).
     const { data, error } = await sb.auth.signUp({
       email: email,
       password: password,
       options: {
         data: {
-          full_name: name || email.split('@')[0],
-          role: selectedRole,
+          full_name: name,
+          role: 'citizen',
+          requested_role: selectedRole,
           badge_number: badge
         }
       }
     });
 
     if (error) {
-      showToast('Registration failed: ' + error.message);
+      signUpError('Registration failed: ' + error.message);
       if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; }
       return;
     }
 
-    showToast('Account created successfully! Welcome to RoadWatch.');
+    // If email confirmation is enabled in Supabase, no session is issued yet —
+    // the account exists but is not authenticated, so keep the user on the auth screen.
+    if (!data.session) {
+      showToast('Account created. Check your inbox to confirm the email, then sign in.');
+      switchAuthTab('signin');
+      const loginEmail = document.getElementById('login-email');
+      if (loginEmail) loginEmail.value = email;
+      return;
+    }
+
+    showToast(selectedRole === 'officer'
+      ? 'Account created. Officer access is pending admin verification.'
+      : 'Account created successfully! Welcome to RoadWatch.');
 
     const user = data.user;
     const profile = {
       id: user?.id,
       email: email,
-      full_name: name || email.split('@')[0],
-      role: selectedRole,
+      full_name: name,
+      role: 'citizen',
       badge_number: badge
     };
 
@@ -285,7 +358,7 @@ window.doSignUp = async function() {
     // Enter app
     enterApp();
   } catch (err) {
-    showToast('Error: ' + err.message);
+    signUpError('Error: ' + err.message);
   } finally {
     if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; }
   }
