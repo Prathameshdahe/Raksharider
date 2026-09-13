@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles (lower(email));
+ALTER TABLE public.profiles
+    ADD COLUMN IF NOT EXISTS requested_role TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles (role);
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -55,6 +58,27 @@ CREATE POLICY "Users can update own profile"
     USING (auth.uid() = id)
     WITH CHECK (auth.uid() = id);
 
+-- RLS alone cannot stop a user from setting their own role: an UPDATE policy's
+-- WITH CHECK only sees the new row. This trigger pins role/requested_role to
+-- their previous values unless the caller is an admin or the service role, so
+-- "update profiles set role='admin' where id = auth.uid()" is a no-op.
+CREATE OR REPLACE FUNCTION public.protect_profile_role()
+RETURNS trigger AS $$
+BEGIN
+    IF auth.role() = 'service_role' OR public.is_admin() THEN
+        RETURN new;
+    END IF;
+    new.role := old.role;
+    new.requested_role := old.requested_role;
+    RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS protect_profile_role ON public.profiles;
+CREATE TRIGGER protect_profile_role
+    BEFORE UPDATE ON public.profiles
+    FOR EACH ROW EXECUTE FUNCTION public.protect_profile_role();
+
 CREATE POLICY "Service role full access to profiles"
     ON public.profiles FOR ALL
     TO service_role
@@ -64,15 +88,20 @@ CREATE POLICY "Service role full access to profiles"
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
-    INSERT INTO public.profiles (id, full_name, email, role, badge_number, avatar_url)
+    -- Roles are never taken from client-supplied metadata: anyone can call
+    -- supabase.auth.signUp() with role='officer'. Everyone lands as a citizen
+    -- (except the configured admin email) and an officer request is recorded
+    -- in requested_role for an admin to approve.
+    INSERT INTO public.profiles (id, full_name, email, role, requested_role, badge_number, avatar_url)
     VALUES (
         new.id,
         COALESCE(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
         lower(new.email),
         CASE
             WHEN lower(new.email) = 'prathameshdahe1@gmail.com' THEN 'admin'
-            ELSE COALESCE(new.raw_user_meta_data->>'role', 'citizen')
+            ELSE 'citizen'
         END,
+        NULLIF(new.raw_user_meta_data->>'requested_role', 'citizen'),
         new.raw_user_meta_data->>'badge_number',
         new.raw_user_meta_data->>'avatar_url'
     )
@@ -83,6 +112,7 @@ BEGIN
             WHEN lower(EXCLUDED.email) = 'prathameshdahe1@gmail.com' THEN 'admin'
             ELSE COALESCE(public.profiles.role, EXCLUDED.role)
         END,
+        requested_role = COALESCE(EXCLUDED.requested_role, public.profiles.requested_role),
         badge_number = COALESCE(EXCLUDED.badge_number, public.profiles.badge_number),
         avatar_url = COALESCE(EXCLUDED.avatar_url, public.profiles.avatar_url),
         updated_at = now();
