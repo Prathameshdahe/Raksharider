@@ -180,9 +180,14 @@ window.selectRole = function(role) {
   if (badgeWrap) badgeWrap.classList.toggle('show', role === 'officer');
 };
 
-window.togglePw = function(fieldId = 'login-pw') {
+window.togglePw = function(fieldId = 'login-pw', btn = null) {
   const pw = document.getElementById(fieldId);
-  if (pw) pw.type = pw.type === 'password' ? 'text' : 'password';
+  if (!pw) return;
+  const reveal = pw.type === 'password';
+  pw.type = reveal ? 'text' : 'password';
+  const toggle = btn || pw.parentElement?.querySelector('.pw-toggle');
+  toggle?.classList.toggle('revealed', reveal);
+  toggle?.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
 };
 
 function updateUserUI(user, profile) {
@@ -266,6 +271,16 @@ window.doSignUp = async function() {
     if (error) {
       showToast('Registration failed: ' + error.message);
       if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; }
+      return;
+    }
+
+    // If email confirmation is enabled in Supabase, no session is issued yet —
+    // the account exists but is not authenticated, so keep the user on the auth screen.
+    if (!data.session) {
+      showToast('Account created. Check your inbox to confirm the email, then sign in.');
+      switchAuthTab('signin');
+      const loginEmail = document.getElementById('login-email');
+      if (loginEmail) loginEmail.value = email;
       return;
     }
 

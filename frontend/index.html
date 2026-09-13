@@ -227,7 +227,7 @@ img{display:block;max-width:100%}
 }
 .login-sub{font-size:13px;color:rgba(251,250,247,.55);margin-bottom:22px;line-height:1.5}
 .field-wrap{position:relative;display:flex;align-items:center;margin-bottom:10px}
-.field-wrap svg{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none}
+.field-wrap > svg{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none}
 .field-wrap input{
   width:100%;background:rgba(18,21,28,.5);
   border:1px solid rgba(251,250,247,.16);border-radius:var(--r12);
@@ -238,11 +238,15 @@ img{display:block;max-width:100%}
 .field-wrap input:focus{border-color:var(--signal)}
 .field-wrap input::placeholder{color:rgba(251,250,247,.35)}
 .pw-toggle{
-  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  position:absolute;right:7px;top:50%;transform:translateY(-50%);
   width:34px;height:34px;background:none;border:0;padding:0;
   color:rgba(139,145,158,.8);display:flex;align-items:center;justify-content:center;
-  transition:color var(--transition);
+  cursor:pointer;transition:color var(--transition);
 }
+.pw-toggle svg{position:static;display:block;width:18px;height:18px;stroke:currentColor;pointer-events:none}
+.pw-toggle .icon-eye-off{display:none}
+.pw-toggle.revealed .icon-eye{display:none}
+.pw-toggle.revealed .icon-eye-off{display:block}
 .pw-toggle:hover{color:var(--warm)}
 .btn-signin{
   width:100%;margin-top:6px;background:var(--signal);color:var(--navy);
@@ -849,8 +853,9 @@ img{display:block;max-width:100%}
       <div class="field-wrap" style="margin-bottom:0">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
         <input id="login-pw" type="password" placeholder="Password" autocomplete="current-password" data-has-toggle="true">
-        <button class="pw-toggle" onclick="togglePw('login-pw')" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        <button class="pw-toggle" onclick="togglePw('login-pw', this)" type="button">
+          <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
         </button>
       </div>
       <button class="btn-signin" id="btn-submit-signin" onclick="doLogin()" style="margin-top:14px">Sign in</button>
@@ -892,8 +897,9 @@ img{display:block;max-width:100%}
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
         <input id="signup-pw" type="password" placeholder="Create password (min 6 chars)" autocomplete="new-password" data-has-toggle="true">
-        <button class="pw-toggle" onclick="togglePw('signup-pw')" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        <button class="pw-toggle" onclick="togglePw('signup-pw', this)" type="button">
+          <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
         </button>
       </div>
       <div class="field-wrap badge-field" id="wrap-badge-field">
