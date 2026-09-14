@@ -24,16 +24,31 @@ function getSB() {
 }
 
 function enterApp() {
-  loginScreen?.classList.remove('active');
+  // Hide splash if still showing (OAuth fast-return case)
+  const splashEl = document.getElementById('splash');
+  if (splashEl && splashEl.style.display !== 'none') {
+    splashEl.style.display = 'none';
+  }
+  // Always remove login screen, show app
+  if (loginScreen) {
+    loginScreen.classList.remove('active');
+    loginScreen.style.display = 'none'; // belt + suspenders
+  }
   if (grid) grid.style.display = 'none';
-  appEl?.classList.add('active');
+  if (appEl) {
+    appEl.style.display = '';
+    appEl.classList.add('active');
+  }
   loadDashboard();
   buildStages();
 }
 
 function showAuthScreen() {
-  appEl?.classList.remove('active');
-  if (loginScreen) loginScreen.classList.add('active');
+  if (appEl) appEl.classList.remove('active');
+  if (loginScreen) {
+    loginScreen.style.display = '';  // restore flex via CSS class
+    loginScreen.classList.add('active');
+  }
   if (grid) grid.style.display = 'block';
   if (!lampOn && typeof toggleLamp === 'function') toggleLamp();
 }
@@ -119,6 +134,11 @@ const loginScreen = document.getElementById('login-screen');
 const appEl = document.getElementById('app');
 const grid = document.getElementById('cursor-grid');
 
+// Detect if this page load is an OAuth callback (hash contains access_token)
+const isOAuthCallback = window.location.hash.includes('access_token') ||
+  window.location.hash.includes('type=recovery') ||
+  new URLSearchParams(window.location.search).has('code');
+
 const splashVideo = document.getElementById('splash-video');
 let splashEnded = false;
 window.splashVideoEnded = function() {
@@ -129,8 +149,12 @@ window.splashVideoEnded = function() {
   splash.style.opacity = '0';
   setTimeout(() => {
     splash.style.display = 'none';
-    if (loginScreen) loginScreen.classList.add('active');
-    if (grid) grid.style.display = 'block';
+    // Only show login screen if we don't already have an active session
+    // (OAuth callbacks will be handled by onAuthStateChange)
+    if (!isOAuthCallback) {
+      if (loginScreen) loginScreen.classList.add('active');
+      if (grid) grid.style.display = 'block';
+    }
   }, 620);
 };
 
@@ -140,9 +164,11 @@ if (splashVideo) {
       document.getElementById('splash-wordmark')?.classList.add('show');
     }, 200);
   });
+  // Speed up splash if this is an OAuth return — user already waited on Google's page
+  const splashDelay = isOAuthCallback ? 800 : 3800;
   setTimeout(() => {
     if (!splashEnded) splashVideoEnded();
-  }, 3800);
+  }, splashDelay);
 }
 
 // ── Lamp toggle ────────────────────────────────────────────
@@ -930,10 +956,48 @@ window.renderQueue = function(targetId) {
 // Render queues on both pages at startup
 renderQueue('review-queue-list');
 
-// ── Session Init ───────────────────────────────────────────
+// ── Session Init + Auth State Listener ────────────────────
 async function initAuthSession() {
   const sb = getSB();
   if (!sb) return;
+
+  // Listen for ALL auth events — this handles OAuth callbacks correctly
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN' && session && session.user) {
+      let profile = null;
+      try {
+        const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+        profile = pData;
+      } catch (pe) {}
+
+      // If profiles table isn't set up yet, fall back to metadata
+      if (!profile) {
+        profile = {
+          id: session.user.id,
+          email: session.user.email,
+          full_name: session.user.user_metadata?.full_name ||
+                     session.user.user_metadata?.name ||
+                     session.user.email.split('@')[0],
+          role: session.user.user_metadata?.role || 'citizen',
+          badge_number: session.user.user_metadata?.badge_number || null,
+        };
+      }
+
+      updateUserUI(session.user, profile);
+      showToast(`Welcome, ${profile.full_name || session.user.email}!`);
+      enterApp();
+
+      // Clean up OAuth hash from URL without reloading
+      if (window.location.hash.includes('access_token')) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    } else if (event === 'SIGNED_OUT') {
+      updateUserUI(null, null);
+      showAuthScreen();
+    }
+  });
+
+  // Also check for existing session on load (returning users who didn't sign out)
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (session && session.user) {
@@ -945,16 +1009,17 @@ async function initAuthSession() {
       updateUserUI(session.user, profile || {
         id: session.user.id,
         email: session.user.email,
-        full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0],
+        full_name: session.user.user_metadata?.full_name ||
+                   session.user.user_metadata?.name ||
+                   session.user.email.split('@')[0],
         role: session.user.user_metadata?.role || 'citizen'
       });
       enterApp();
-    } else {
-      updateUserUI(null, null);
     }
   } catch (err) {
-    console.log('Session init note:', err);
+    console.log('Session check note:', err);
   }
 }
+
 window.addEventListener('DOMContentLoaded', initAuthSession);
-setTimeout(initAuthSession, 1200);
+setTimeout(initAuthSession, 400);
