@@ -187,9 +187,10 @@ img{display:block;max-width:100%}
   position:fixed;inset:0;z-index:150;
   display:none;flex-direction:column;align-items:center;
   overflow-y:auto;
-  /* no horizontal padding — lamp + panel are self-contained */
 }
 #login-screen.active{display:flex}
+/* Strict mutual exclusion: when login screen is active, main app is never shown */
+body:has(#login-screen.active) #app{display:none !important}
 /* Cursor grid lives in z-index:0 behind everything */
 /* ── Watchdog Animated Logo ──────────────────────────────── */
 .logo-wrap{

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roadwatch-ai-worker:latest
+    container_name: roadwatch_ai_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./evidence_output:/app/pipeline/evidence_output

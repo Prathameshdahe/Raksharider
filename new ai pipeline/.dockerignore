@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+pytest-cache-files-*/
+runs/
+dataset/
+*.mp4
+*.avi
+*.mkv
+.git/
+.env.local
