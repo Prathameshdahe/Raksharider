@@ -129,13 +129,18 @@ if ('serviceWorker' in navigator) {
 })();
 
 // ── Splash → Login flow ────────────────────────────────────
-const splash = document.getElementById('splash');
+const splash      = document.getElementById('splash');
 const loginScreen = document.getElementById('login-screen');
-const appEl = document.getElementById('app');
-const grid = document.getElementById('cursor-grid');
+const appEl       = document.getElementById('app');
+const grid        = document.getElementById('cursor-grid');
 
-// Detect if this page load is an OAuth callback (hash contains access_token)
-const isOAuthCallback = window.location.hash.includes('access_token') ||
+// Shared flag — set to true the moment we know a session exists.
+// splashVideoEnded() checks this before ever showing the login screen.
+let hasActiveSession = false;
+
+// Detect OAuth callback URL (hash or code param)
+const isOAuthCallback =
+  window.location.hash.includes('access_token') ||
   window.location.hash.includes('type=recovery') ||
   new URLSearchParams(window.location.search).has('code');
 
@@ -149,9 +154,9 @@ window.splashVideoEnded = function() {
   splash.style.opacity = '0';
   setTimeout(() => {
     splash.style.display = 'none';
-    // Only show login screen if we don't already have an active session
-    // (OAuth callbacks will be handled by onAuthStateChange)
-    if (!isOAuthCallback) {
+    // Only show login screen if there is NO active session.
+    // Both OAuth returns and returning logged-in users skip straight to the app.
+    if (!hasActiveSession && !isOAuthCallback) {
       if (loginScreen) loginScreen.classList.add('active');
       if (grid) grid.style.display = 'block';
     }
@@ -164,7 +169,6 @@ if (splashVideo) {
       document.getElementById('splash-wordmark')?.classList.add('show');
     }, 200);
   });
-  // Speed up splash if this is an OAuth return — user already waited on Google's page
   const splashDelay = isOAuthCallback ? 800 : 3800;
   setTimeout(() => {
     if (!splashEnded) splashVideoEnded();
@@ -956,70 +960,86 @@ window.renderQueue = function(targetId) {
 // Render queues on both pages at startup
 renderQueue('review-queue-list');
 
-// ── Session Init + Auth State Listener ────────────────────
+// ── Session Init + Auth State Listener (registered ONCE) ────
+let _authListenerRegistered = false;
+let _enterAppCalled = false;
+
+function _safeEnterApp(user, profile) {
+  if (_enterAppCalled) return; // prevent double-entry
+  _enterAppCalled = true;
+  hasActiveSession = true;
+  updateUserUI(user, profile);
+  enterApp();
+}
+
 async function initAuthSession() {
   const sb = getSB();
   if (!sb) return;
 
-  // Listen for ALL auth events — this handles OAuth callbacks correctly
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if (event === 'SIGNED_IN' && session && session.user) {
-      let profile = null;
-      try {
-        const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
-        profile = pData;
-      } catch (pe) {}
-
-      // If profiles table isn't set up yet, fall back to metadata
-      if (!profile) {
-        profile = {
-          id: session.user.id,
-          email: session.user.email,
-          full_name: session.user.user_metadata?.full_name ||
-                     session.user.user_metadata?.name ||
-                     session.user.email.split('@')[0],
-          role: session.user.user_metadata?.role || 'citizen',
-          badge_number: session.user.user_metadata?.badge_number || null,
-        };
+  // Register listener only once
+  if (!_authListenerRegistered) {
+    _authListenerRegistered = true;
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
+        hasActiveSession = true;
+        // Fetch profile
+        let profile = null;
+        try {
+          const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+          profile = pData;
+        } catch (pe) {}
+        if (!profile) {
+          profile = {
+            id: session.user.id,
+            email: session.user.email,
+            full_name: session.user.user_metadata?.full_name ||
+                       session.user.user_metadata?.name ||
+                       session.user.email.split('@')[0],
+            role: session.user.user_metadata?.role || 'citizen',
+            badge_number: session.user.user_metadata?.badge_number || null,
+          };
+        }
+        _safeEnterApp(session.user, profile);
+        if (event === 'SIGNED_IN' && !session.user.user_metadata?.fromInit) {
+          showToast(`Welcome, ${profile.full_name || session.user.email}!`);
+        }
+        // Clean up OAuth hash
+        if (window.location.hash.includes('access_token')) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        hasActiveSession = false;
+        _enterAppCalled = false;
+        updateUserUI(null, null);
+        showAuthScreen();
       }
+    });
+  }
 
-      updateUserUI(session.user, profile);
-      showToast(`Welcome, ${profile.full_name || session.user.email}!`);
-      enterApp();
-
-      // Clean up OAuth hash from URL without reloading
-      if (window.location.hash.includes('access_token')) {
-        window.history.replaceState(null, '', window.location.pathname + window.location.search);
-      }
-    } else if (event === 'SIGNED_OUT') {
-      updateUserUI(null, null);
-      showAuthScreen();
-    }
-  });
-
-  // Also check for existing session on load (returning users who didn't sign out)
+  // Explicit getSession() check for returning users (session may exist before listener fires)
   try {
     const { data: { session } } = await sb.auth.getSession();
-    if (session && session.user) {
+    if (session?.user) {
+      hasActiveSession = true;
       let profile = null;
       try {
         const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
         profile = pData;
       } catch (pe) {}
-      updateUserUI(session.user, profile || {
+      _safeEnterApp(session.user, profile || {
         id: session.user.id,
         email: session.user.email,
         full_name: session.user.user_metadata?.full_name ||
                    session.user.user_metadata?.name ||
                    session.user.email.split('@')[0],
-        role: session.user.user_metadata?.role || 'citizen'
+        role: session.user.user_metadata?.role || 'citizen',
       });
-      enterApp();
     }
   } catch (err) {
     console.log('Session check note:', err);
   }
 }
 
+// Single init call — DOMContentLoaded is sufficient, no setTimeout needed
 window.addEventListener('DOMContentLoaded', initAuthSession);
-setTimeout(initAuthSession, 400);
+
