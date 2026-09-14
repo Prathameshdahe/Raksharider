@@ -66,3 +66,7 @@ evidence/
 # ─── Logs ───────────────────────────────────────────────────────────────────
 *.log
 logs/
+
+# Google OAuth secrets
+client_secret_*.json
+*.apps.googleusercontent.com.json

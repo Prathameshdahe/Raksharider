@@ -24,16 +24,31 @@ function getSB() {
 }
 
 function enterApp() {
-  loginScreen?.classList.remove('active');
+  // Hide splash if still showing (OAuth fast-return case)
+  const splashEl = document.getElementById('splash');
+  if (splashEl && splashEl.style.display !== 'none') {
+    splashEl.style.display = 'none';
+  }
+  // Always remove login screen, show app
+  if (loginScreen) {
+    loginScreen.classList.remove('active');
+    loginScreen.style.display = 'none'; // belt + suspenders
+  }
   if (grid) grid.style.display = 'none';
-  appEl?.classList.add('active');
+  if (appEl) {
+    appEl.style.display = '';
+    appEl.classList.add('active');
+  }
   loadDashboard();
   buildStages();
 }
 
 function showAuthScreen() {
-  appEl?.classList.remove('active');
-  if (loginScreen) loginScreen.classList.add('active');
+  if (appEl) appEl.classList.remove('active');
+  if (loginScreen) {
+    loginScreen.style.display = '';  // restore flex via CSS class
+    loginScreen.classList.add('active');
+  }
   if (grid) grid.style.display = 'block';
   if (!lampOn && typeof toggleLamp === 'function') toggleLamp();
 }
@@ -114,10 +129,20 @@ if ('serviceWorker' in navigator) {
 })();
 
 // ── Splash → Login flow ────────────────────────────────────
-const splash = document.getElementById('splash');
+const splash      = document.getElementById('splash');
 const loginScreen = document.getElementById('login-screen');
-const appEl = document.getElementById('app');
-const grid = document.getElementById('cursor-grid');
+const appEl       = document.getElementById('app');
+const grid        = document.getElementById('cursor-grid');
+
+// Shared flag — set to true the moment we know a session exists.
+// splashVideoEnded() checks this before ever showing the login screen.
+let hasActiveSession = false;
+
+// Detect OAuth callback URL (hash or code param)
+const isOAuthCallback =
+  window.location.hash.includes('access_token') ||
+  window.location.hash.includes('type=recovery') ||
+  new URLSearchParams(window.location.search).has('code');
 
 const splashVideo = document.getElementById('splash-video');
 let splashEnded = false;
@@ -129,8 +154,12 @@ window.splashVideoEnded = function() {
   splash.style.opacity = '0';
   setTimeout(() => {
     splash.style.display = 'none';
-    if (loginScreen) loginScreen.classList.add('active');
-    if (grid) grid.style.display = 'block';
+    // Only show login screen if there is NO active session.
+    // Both OAuth returns and returning logged-in users skip straight to the app.
+    if (!hasActiveSession && !isOAuthCallback) {
+      if (loginScreen) loginScreen.classList.add('active');
+      if (grid) grid.style.display = 'block';
+    }
   }, 620);
 };
 
@@ -140,9 +169,10 @@ if (splashVideo) {
       document.getElementById('splash-wordmark')?.classList.add('show');
     }, 200);
   });
+  const splashDelay = isOAuthCallback ? 800 : 3800;
   setTimeout(() => {
     if (!splashEnded) splashVideoEnded();
-  }, 3800);
+  }, splashDelay);
 }
 
 // ── Lamp toggle ────────────────────────────────────────────
@@ -930,31 +960,86 @@ window.renderQueue = function(targetId) {
 // Render queues on both pages at startup
 renderQueue('review-queue-list');
 
-// ── Session Init ───────────────────────────────────────────
+// ── Session Init + Auth State Listener (registered ONCE) ────
+let _authListenerRegistered = false;
+let _enterAppCalled = false;
+
+function _safeEnterApp(user, profile) {
+  if (_enterAppCalled) return; // prevent double-entry
+  _enterAppCalled = true;
+  hasActiveSession = true;
+  updateUserUI(user, profile);
+  enterApp();
+}
+
 async function initAuthSession() {
   const sb = getSB();
   if (!sb) return;
+
+  // Register listener only once
+  if (!_authListenerRegistered) {
+    _authListenerRegistered = true;
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
+        hasActiveSession = true;
+        // Fetch profile
+        let profile = null;
+        try {
+          const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+          profile = pData;
+        } catch (pe) {}
+        if (!profile) {
+          profile = {
+            id: session.user.id,
+            email: session.user.email,
+            full_name: session.user.user_metadata?.full_name ||
+                       session.user.user_metadata?.name ||
+                       session.user.email.split('@')[0],
+            role: session.user.user_metadata?.role || 'citizen',
+            badge_number: session.user.user_metadata?.badge_number || null,
+          };
+        }
+        _safeEnterApp(session.user, profile);
+        if (event === 'SIGNED_IN' && !session.user.user_metadata?.fromInit) {
+          showToast(`Welcome, ${profile.full_name || session.user.email}!`);
+        }
+        // Clean up OAuth hash
+        if (window.location.hash.includes('access_token')) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        hasActiveSession = false;
+        _enterAppCalled = false;
+        updateUserUI(null, null);
+        showAuthScreen();
+      }
+    });
+  }
+
+  // Explicit getSession() check for returning users (session may exist before listener fires)
   try {
     const { data: { session } } = await sb.auth.getSession();
-    if (session && session.user) {
+    if (session?.user) {
+      hasActiveSession = true;
       let profile = null;
       try {
         const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
         profile = pData;
       } catch (pe) {}
-      updateUserUI(session.user, profile || {
+      _safeEnterApp(session.user, profile || {
         id: session.user.id,
         email: session.user.email,
-        full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0],
-        role: session.user.user_metadata?.role || 'citizen'
+        full_name: session.user.user_metadata?.full_name ||
+                   session.user.user_metadata?.name ||
+                   session.user.email.split('@')[0],
+        role: session.user.user_metadata?.role || 'citizen',
       });
-      enterApp();
-    } else {
-      updateUserUI(null, null);
     }
   } catch (err) {
-    console.log('Session init note:', err);
+    console.log('Session check note:', err);
   }
 }
+
+// Single init call — DOMContentLoaded is sufficient, no setTimeout needed
 window.addEventListener('DOMContentLoaded', initAuthSession);
-setTimeout(initAuthSession, 1200);
+
