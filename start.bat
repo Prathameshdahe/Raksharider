@@ -114,7 +114,7 @@ echo.
 :: ════════════════════════════════════════════════════════════
 echo [Stage 2/5] Starting Backend (FastAPI :8000)...
 
-start "RoadWatch.AI ^ Backend (:8000)" cmd /k "title Backend (:8000) && cd /d \"%BACKEND%\" && call venv\Scripts\activate.bat && pip show fastapi >nul 2>&1 || pip install -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+start "RoadWatch.AI - Backend (:8000)" /D "%BACKEND%" cmd /k "title Backend (:8000) && call start.bat"
 
 :: Poll /health until backend is up (max 30 seconds)
 echo   Waiting for backend...
@@ -141,7 +141,7 @@ echo.
 :: ════════════════════════════════════════════════════════════
 echo [Stage 3/5] Starting Frontend PWA (:5051)...
 
-start "RoadWatch.AI ^ Frontend (:5051)" cmd /k "title Frontend (:5051) && cd /d \"%FRONTEND%\" && python -m http.server 5051"
+start "RoadWatch.AI - Frontend (:5051)" /D "%FRONTEND%" cmd /k "title Frontend (:5051) && python -m http.server 5051"
 
 timeout /t 2 /nobreak >nul
 netstat -an | findstr ":5051 " | findstr "LISTENING" >nul 2>&1
@@ -157,7 +157,7 @@ echo.
 :: ════════════════════════════════════════════════════════════
 echo [Stage 4/5] Starting AI Worker (queue polling)...
 
-start "RoadWatch.AI ^ AI Worker" cmd /k "title AI Worker && cd /d \"%PIPELINE%\" && (if exist .venv\pyvenv.cfg call .venv\Scripts\activate.bat) && python worker.py --poll 10"
+start "RoadWatch.AI - AI Worker" /D "%PIPELINE%" cmd /k "title AI Worker && call start.bat"
 
 timeout /t 3 /nobreak >nul
 echo   [OK] AI Worker window launched (logs show polling status)

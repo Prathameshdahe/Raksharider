@@ -15,7 +15,7 @@ IF EXIST ".venv\pyvenv.cfg" (
 
 pip show ultralytics >nul 2>&1
 IF ERRORLEVEL 1 (
-    echo [SETUP] Installing AI pipeline dependencies (first run - takes a few minutes)...
+    echo [SETUP] Installing AI pipeline dependencies - first run...
     pip install -r requirements.txt
 )
 

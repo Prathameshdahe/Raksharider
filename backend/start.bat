@@ -33,7 +33,7 @@ echo [OK] Virtual environment activated.
 REM Install requirements if needed
 pip show fastapi >nul 2>&1
 IF ERRORLEVEL 1 (
-    echo [SETUP] Installing dependencies (first time)...
+    echo [SETUP] Installing dependencies first time...
     pip install -r requirements.txt
     IF ERRORLEVEL 1 (
         echo [ERROR] pip install failed. Check requirements.txt.

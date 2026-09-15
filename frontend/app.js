@@ -23,17 +23,54 @@ function getSB() {
   return null;
 }
 
+// Check immediately (synchronously) if Supabase session is stored in localStorage
+function hasSavedSupabaseSession() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+        const v = localStorage.getItem(k);
+        if (v && v.includes('access_token')) return true;
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
 function enterApp() {
-  loginScreen?.classList.remove('active');
+  splashEnded = true;
+  const splashEl = document.getElementById('splash');
+  if (splashEl) {
+    splashEl.style.display = 'none';
+    splashEl.style.opacity = '0';
+  }
+  // Strictly hide login screen and cursor grid
+  if (loginScreen) {
+    loginScreen.classList.remove('active');
+    loginScreen.style.display = 'none';
+  }
   if (grid) grid.style.display = 'none';
-  appEl?.classList.add('active');
+
+  // Strictly show main app container
+  if (appEl) {
+    appEl.style.display = 'block';
+    appEl.classList.add('active');
+  }
   loadDashboard();
   buildStages();
 }
 
 function showAuthScreen() {
-  appEl?.classList.remove('active');
-  if (loginScreen) loginScreen.classList.add('active');
+  // Strictly hide main app container
+  if (appEl) {
+    appEl.classList.remove('active');
+    appEl.style.display = 'none';
+  }
+  // Strictly show login screen
+  if (loginScreen) {
+    loginScreen.style.display = 'flex';
+    loginScreen.classList.add('active');
+  }
   if (grid) grid.style.display = 'block';
   if (!lampOn && typeof toggleLamp === 'function') toggleLamp();
 }
@@ -114,10 +151,19 @@ if ('serviceWorker' in navigator) {
 })();
 
 // ── Splash → Login flow ────────────────────────────────────
-const splash = document.getElementById('splash');
+const splash      = document.getElementById('splash');
 const loginScreen = document.getElementById('login-screen');
-const appEl = document.getElementById('app');
-const grid = document.getElementById('cursor-grid');
+const appEl       = document.getElementById('app');
+const grid        = document.getElementById('cursor-grid');
+
+// Shared flag — initialize immediately from localStorage so on refresh we don't flash login screen
+let hasActiveSession = hasSavedSupabaseSession();
+
+// Detect OAuth callback URL (hash or code param)
+const isOAuthCallback =
+  window.location.hash.includes('access_token') ||
+  window.location.hash.includes('type=recovery') ||
+  new URLSearchParams(window.location.search).has('code');
 
 const splashVideo = document.getElementById('splash-video');
 let splashEnded = false;
@@ -125,13 +171,37 @@ window.splashVideoEnded = function() {
   if (splashEnded) return;
   splashEnded = true;
   if (!splash) return;
-  splash.style.transition = 'opacity .6s ease';
+  splash.style.transition = 'opacity .4s ease';
   splash.style.opacity = '0';
   setTimeout(() => {
     splash.style.display = 'none';
-    if (loginScreen) loginScreen.classList.add('active');
-    if (grid) grid.style.display = 'block';
-  }, 620);
+    // Re-check session status
+    if (!hasActiveSession) hasActiveSession = hasSavedSupabaseSession();
+
+    if (!hasActiveSession && !isOAuthCallback) {
+      // User is NOT logged in: show login screen, ensure app is hidden
+      if (appEl) {
+        appEl.classList.remove('active');
+        appEl.style.display = 'none';
+      }
+      if (loginScreen) {
+        loginScreen.style.display = 'flex';
+        loginScreen.classList.add('active');
+      }
+      if (grid) grid.style.display = 'block';
+    } else {
+      // User IS logged in: show app, ensure login screen is hidden
+      if (loginScreen) {
+        loginScreen.classList.remove('active');
+        loginScreen.style.display = 'none';
+      }
+      if (grid) grid.style.display = 'none';
+      if (appEl) {
+        appEl.style.display = 'block';
+        appEl.classList.add('active');
+      }
+    }
+  }, 420);
 };
 
 if (splashVideo) {
@@ -140,9 +210,10 @@ if (splashVideo) {
       document.getElementById('splash-wordmark')?.classList.add('show');
     }, 200);
   });
+  const splashDelay = isOAuthCallback ? 800 : 3800;
   setTimeout(() => {
     if (!splashEnded) splashVideoEnded();
-  }, 3800);
+  }, splashDelay);
 }
 
 // ── Lamp toggle ────────────────────────────────────────────
@@ -751,7 +822,10 @@ function renderCards() {
     const vtype      = v.vehicle_type || v.class || 'unknown';
     const violations = v.violations || v.violation_types || [];
     const createdAt  = v.created_at ? new Date(v.created_at).toLocaleString() : '—';
-    const evidenceUrl = v.evidence_url || null;
+    const evidenceUrl = (Array.isArray(v.evidence_urls) && v.evidence_urls[0]) || v.evidence_url || null;
+    const allEvidence = Array.isArray(v.evidence_urls) && v.evidence_urls.length > 0
+      ? v.evidence_urls
+      : (evidenceUrl ? [evidenceUrl] : []);
     const videoId    = v.video_id || v.id;
     const trackId    = v.track_id || '—';
     const [badgeClass, badgeText] = statusBadge(status);
@@ -759,6 +833,12 @@ function renderCards() {
     const violationTags = Array.isArray(violations) && violations.length > 0
       ? violations.map(vt => `<span class="tag tag--signal">${vt}</span>`).join('')
       : `<span class="tag">no violations</span>`;
+
+    const evidenceImagesHtml = allEvidence.length > 0
+      ? `<div class="frame-strip" style="display:flex;gap:8px;overflow-x:auto;padding-bottom:6px">
+          ${allEvidence.map(imgUrl => `<a href="${imgUrl}" target="_blank" rel="noopener"><img src="${imgUrl}" alt="Evidence frame" style="border-radius:8px;max-height:180px;object-fit:cover;border:1px solid rgba(18,21,28,.12)"></a>`).join('')}
+         </div>`
+      : '';
 
     return `
       <article class="card" id="card-${idx}">
@@ -776,7 +856,7 @@ function renderCards() {
         </button>
         <div id="card-detail-${idx}" style="display:none">
           <div class="card-detail">
-            ${evidenceUrl ? `<div class="frame-strip"><img src="${evidenceUrl}" alt="Evidence frame" style="border-radius:8px;width:100%;object-fit:cover;max-height:200px"></div>` : ''}
+            ${evidenceImagesHtml}
             <div class="data-table">
               <div class="data-row"><span>video_id</span><span class="data-val mono" style="font-size:11px">${videoId || '—'}</span></div>
               <div class="data-row"><span>track_id</span><span class="data-val">${trackId}</span></div>
@@ -930,31 +1010,86 @@ window.renderQueue = function(targetId) {
 // Render queues on both pages at startup
 renderQueue('review-queue-list');
 
-// ── Session Init ───────────────────────────────────────────
+// ── Session Init + Auth State Listener (registered ONCE) ────
+let _authListenerRegistered = false;
+let _enterAppCalled = false;
+
+function _safeEnterApp(user, profile) {
+  if (_enterAppCalled) return; // prevent double-entry
+  _enterAppCalled = true;
+  hasActiveSession = true;
+  updateUserUI(user, profile);
+  enterApp();
+}
+
 async function initAuthSession() {
   const sb = getSB();
   if (!sb) return;
+
+  // Register listener only once
+  if (!_authListenerRegistered) {
+    _authListenerRegistered = true;
+    sb.auth.onAuthStateChange(async (event, session) => {
+      if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
+        hasActiveSession = true;
+        // Fetch profile
+        let profile = null;
+        try {
+          const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+          profile = pData;
+        } catch (pe) {}
+        if (!profile) {
+          profile = {
+            id: session.user.id,
+            email: session.user.email,
+            full_name: session.user.user_metadata?.full_name ||
+                       session.user.user_metadata?.name ||
+                       session.user.email.split('@')[0],
+            role: session.user.user_metadata?.role || 'citizen',
+            badge_number: session.user.user_metadata?.badge_number || null,
+          };
+        }
+        _safeEnterApp(session.user, profile);
+        if (event === 'SIGNED_IN' && !session.user.user_metadata?.fromInit) {
+          showToast(`Welcome, ${profile.full_name || session.user.email}!`);
+        }
+        // Clean up OAuth hash
+        if (window.location.hash.includes('access_token')) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        hasActiveSession = false;
+        _enterAppCalled = false;
+        updateUserUI(null, null);
+        showAuthScreen();
+      }
+    });
+  }
+
+  // Explicit getSession() check for returning users (session may exist before listener fires)
   try {
     const { data: { session } } = await sb.auth.getSession();
-    if (session && session.user) {
+    if (session?.user) {
+      hasActiveSession = true;
       let profile = null;
       try {
         const { data: pData } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
         profile = pData;
       } catch (pe) {}
-      updateUserUI(session.user, profile || {
+      _safeEnterApp(session.user, profile || {
         id: session.user.id,
         email: session.user.email,
-        full_name: session.user.user_metadata?.full_name || session.user.email.split('@')[0],
-        role: session.user.user_metadata?.role || 'citizen'
+        full_name: session.user.user_metadata?.full_name ||
+                   session.user.user_metadata?.name ||
+                   session.user.email.split('@')[0],
+        role: session.user.user_metadata?.role || 'citizen',
       });
-      enterApp();
-    } else {
-      updateUserUI(null, null);
     }
   } catch (err) {
-    console.log('Session init note:', err);
+    console.log('Session check note:', err);
   }
 }
+
+// Single init call — DOMContentLoaded is sufficient, no setTimeout needed
 window.addEventListener('DOMContentLoaded', initAuthSession);
-setTimeout(initAuthSession, 1200);
+

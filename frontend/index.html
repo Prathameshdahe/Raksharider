@@ -187,9 +187,10 @@ img{display:block;max-width:100%}
   position:fixed;inset:0;z-index:150;
   display:none;flex-direction:column;align-items:center;
   overflow-y:auto;
-  /* no horizontal padding — lamp + panel are self-contained */
 }
 #login-screen.active{display:flex}
+/* Strict mutual exclusion: when login screen is active, main app is never shown */
+body:has(#login-screen.active) #app{display:none !important}
 /* Cursor grid lives in z-index:0 behind everything */
 /* ── Watchdog Animated Logo ──────────────────────────────── */
 .logo-wrap{
@@ -227,49 +228,51 @@ img{display:block;max-width:100%}
 }
 .login-sub{font-size:13px;color:rgba(251,250,247,.55);margin-bottom:22px;line-height:1.5}
 .field-wrap{position:relative;display:flex;align-items:center;margin-bottom:10px}
-.field-wrap svg{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none}
+.field-wrap>svg:first-child{position:absolute;left:13px;width:17px;height:17px;stroke:rgba(139,145,158,.8);pointer-events:none;flex-shrink:0}
 .field-wrap input{
   width:100%;background:rgba(18,21,28,.5);
   border:1px solid rgba(251,250,247,.16);border-radius:var(--r12);
   padding:13px 13px 13px 40px;color:var(--warm);font-size:14px;
-  outline:none;transition:border-color var(--transition);
+  outline:none;transition:border-color var(--transition);line-height:1.4;
 }
-.field-wrap input[type="password"],.field-wrap input[data-has-toggle="true"]{padding-right:48px}
-.field-wrap input:focus{border-color:var(--signal)}
-.field-wrap input::placeholder{color:rgba(251,250,247,.35)}
+.field-wrap input[type="password"],.field-wrap input[data-has-toggle="true"]{padding-right:46px}
+.field-wrap input:focus{border-color:var(--signal);box-shadow:0 0 0 3px rgba(255,74,38,.12)}
+.field-wrap input::placeholder{color:rgba(251,250,247,.32)}
 .pw-toggle{
-  position:absolute;right:8px;top:50%;transform:translateY(-50%);
-  width:34px;height:34px;background:none;border:0;padding:0;
-  color:rgba(139,145,158,.8);display:flex;align-items:center;justify-content:center;
-  transition:color var(--transition);
+  position:absolute;right:0;top:0;bottom:0;
+  width:44px;background:none;border:0;padding:0;
+  color:rgba(139,145,158,.7);display:flex;align-items:center;justify-content:center;
+  transition:color var(--transition);border-radius:0 var(--r12) var(--r12) 0;
 }
 .pw-toggle:hover{color:var(--warm)}
 .btn-signin{
-  width:100%;margin-top:6px;background:var(--signal);color:var(--navy);
+  width:100%;margin-top:6px;background:var(--signal);color:#fff;
   border:0;border-radius:var(--r12);padding:14px;
   font-family:'Archivo',sans-serif;font-weight:700;font-size:14.5px;
-  transition:background var(--transition);
+  transition:background var(--transition),transform .1s ease;
+  letter-spacing:.2px;
 }
-.btn-signin:hover{background:#ff6746}
-.btn-signin:active{background:#e63d1c}
+.btn-signin:hover{background:#ff5c35}
+.btn-signin:active{background:#e03a18;transform:scale(.99)}
 .divider-or{
-  display:flex;align-items:center;gap:12px;margin:18px 0;
+  display:flex;align-items:center;gap:12px;margin:16px 0;
 }
 .divider-or::before,.divider-or::after{content:'';flex:1;height:1px;background:rgba(251,250,247,.14)}
 .divider-or span{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.6px;color:rgba(251,250,247,.38)}
 .social-btns{display:flex;gap:8px}
 .btn-social{
-  flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
-  background:rgba(251,250,247,.06);border:1px solid rgba(251,250,247,.16);
-  border-radius:var(--r12);padding:10px;color:var(--warm);font-size:13px;font-weight:500;
-  transition:background var(--transition);
+  flex:1;display:flex;align-items:center;justify-content:center;gap:8px;
+  background:rgba(255,255,255,.07);border:1px solid rgba(251,250,247,.18);
+  border-radius:var(--r12);padding:11px 14px;color:var(--warm);font-size:13.5px;font-weight:600;
+  transition:background var(--transition),border-color var(--transition);
 }
-.btn-social:hover{background:rgba(251,250,247,.12)}
+.btn-social:hover{background:rgba(255,255,255,.13);border-color:rgba(251,250,247,.32)}
 .login-admin-link{
-  margin-top:14px;text-align:center;
+  margin-top:16px;padding-top:14px;text-align:center;
   font-size:12px;color:rgba(251,250,247,.38);
+  border-top:1px solid rgba(251,250,247,.08);
 }
-.login-admin-link a{color:rgba(255,74,38,.7);font-weight:600}
+.login-admin-link a{color:rgba(255,74,38,.75);font-weight:600;transition:color .15s}
 .login-admin-link a:hover{color:var(--signal)}
 
 /* ── Auth Tabs & Registration Controls ───────────────────── */
@@ -281,30 +284,32 @@ img{display:block;max-width:100%}
 .auth-tab{
   flex:1;padding:9px 0;text-align:center;
   font-family:'Archivo',sans-serif;font-weight:700;font-size:13px;
-  color:rgba(251,250,247,.6);border:0;background:none;border-radius:10px;
-  cursor:pointer;transition:all .2s ease;
+  color:rgba(251,250,247,.55);border:0;background:none;border-radius:10px;
+  cursor:pointer;transition:all .22s ease;
 }
 .auth-tab.active{
-  background:rgba(255,74,38,.18);color:var(--warm);
-  border:1px solid rgba(255,74,38,.4);box-shadow:0 2px 10px rgba(255,74,38,.2);
+  background:rgba(255,74,38,.2);color:var(--warm);
+  border:1px solid rgba(255,74,38,.45);box-shadow:0 2px 12px rgba(255,74,38,.25);
 }
-.auth-role-select{display:flex;gap:8px;margin-bottom:12px}
+.auth-role-select{display:flex;gap:8px;margin-bottom:14px}
 .role-pill{
   flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
-  padding:9px 8px;border-radius:var(--r12);
+  padding:10px 8px;border-radius:var(--r12);
   border:1px solid rgba(251,250,247,.14);background:rgba(18,21,28,.45);
-  color:rgba(251,250,247,.65);font-size:12.5px;font-weight:600;
-  cursor:pointer;transition:all .2s ease;
+  color:rgba(251,250,247,.6);font-size:13px;font-weight:600;
+  cursor:pointer;transition:all .22s ease;
 }
 .role-pill.active{
   border-color:var(--signal);background:rgba(255,74,38,.16);color:var(--warm);
+  box-shadow:0 0 0 3px rgba(255,74,38,.1);
 }
 .badge-field{display:none}
 .badge-field.show{display:flex}
 .auth-helper-text{
-  font-size:11.5px;color:rgba(251,250,247,.45);margin-top:12px;line-height:1.4;text-align:center;
+  font-size:12px;color:rgba(251,250,247,.45);margin-top:14px;line-height:1.4;text-align:center;
 }
-.auth-helper-text a{color:var(--warm);text-decoration:underline}
+.auth-helper-text a{color:rgba(255,74,38,.8);font-weight:600;transition:color .15s}
+.auth-helper-text a:hover{color:var(--signal)}
 
 /* ── User Header Chip & Dropdown ─────────────────────────── */
 .user-chip{
@@ -855,11 +860,16 @@ img{display:block;max-width:100%}
       </div>
       <button class="btn-signin" id="btn-submit-signin" onclick="doLogin()" style="margin-top:14px">Sign in</button>
 
-      <div class="divider-or"><span>or sign in with</span></div>
+      <div class="divider-or"><span>or continue with</span></div>
       <div class="social-btns">
         <button class="btn-social" type="button" onclick="doGoogleLogin()">
-          <svg viewBox="0 0 24 24" style="width:15px;height:15px"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v18M3.6 8h16.8M3.6 16h16.8" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
-          Google
+          <svg viewBox="0 0 24 24" style="width:18px;height:18px" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          Continue with Google
         </button>
       </div>
       <div class="login-admin-link"><a href="admin.html">Admin access →</a></div>
@@ -902,6 +912,20 @@ img{display:block;max-width:100%}
       </div>
 
       <button class="btn-signin" id="btn-submit-signup" onclick="doSignUp()" style="margin-top:6px">Create Account</button>
+
+      <div class="divider-or"><span>or continue with</span></div>
+      <div class="social-btns">
+        <button class="btn-social" type="button" onclick="doGoogleLogin()">
+          <svg viewBox="0 0 24 24" style="width:18px;height:18px" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+          </svg>
+          Continue with Google
+        </button>
+      </div>
+
       <div class="auth-helper-text">Already registered? <a href="#" onclick="switchAuthTab('signin'); return false;">Sign in instead</a></div>
     </div>
   </div>
