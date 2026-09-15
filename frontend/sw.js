@@ -1,5 +1,5 @@
-const CACHE = 'rw-v5';
-// Core assets to pre-cache (large webm logos excluded — fetched on demand)
+const CACHE = 'rw-v6';
+// Core assets to pre-cache
 const ASSETS = [
   '/', '/index.html', '/app.js', '/admin.html',
   '/logo.png', '/manifest.json',
@@ -26,13 +26,29 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Don't intercept Supabase API calls or CDN scripts — always go to network
   const url = e.request.url;
+
+  // Supabase, Google, CDNs: always direct network
   if (url.includes('supabase.co') || url.includes('jsdelivr.net') || url.includes('googleapis.com')) {
     e.respondWith(fetch(e.request));
     return;
   }
-  // Cache-first for everything else
+
+  // HTML and JS scripts: Network-first (so code updates are instant without hard refresh)
+  if (e.request.mode === 'navigate' || url.endsWith('.html') || url.endsWith('.js') || url.endsWith('/')) {
+    e.respondWith(
+      fetch(e.request)
+        .then(res => {
+          const resClone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, resClone));
+          return res;
+        })
+        .catch(() => caches.match(e.request))
+    );
+    return;
+  }
+
+  // Cache-first for images, fonts, and static media
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request))
   );

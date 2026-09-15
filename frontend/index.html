@@ -189,8 +189,10 @@ img{display:block;max-width:100%}
   overflow-y:auto;
 }
 #login-screen.active{display:flex}
-/* Strict mutual exclusion: when login screen is active, main app is never shown */
+/* Strict two-way mutual exclusion: login screen and main app can NEVER display together */
 body:has(#login-screen.active) #app{display:none !important}
+body:has(#app.active) #login-screen{display:none !important;visibility:hidden !important;pointer-events:none !important}
+body:has(#app.active) #cursor-grid{display:none !important}
 /* Cursor grid lives in z-index:0 behind everything */
 /* ── Watchdog Animated Logo ──────────────────────────────── */
 .logo-wrap{
@@ -1334,6 +1336,6 @@ body:has(#login-screen.active) #app{display:none !important}
 <!-- Toast -->
 <div id="toast"></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=2.2"></script>
 </body>
 </html>
