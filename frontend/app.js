@@ -6,8 +6,8 @@ const SUPABASE_URL = 'https://fbjjoktuzirhpqqpzfbo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZiampva3R1emlyaHBxcXB6ZmJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0MjA1MzcsImV4cCI6MjEwMDk5NjUzN30.sp9Kgpt7alImqzhzWkWo1Gx4FTzut0Fzm9IPu8fX0po';
 
 // ── Backend API URL — auto-switches between local dev and deployed Render ──
-// When deployed to Vercel, update the RENDER_URL below to your Render service URL.
-const RENDER_URL = 'https://roadwatch-backend.onrender.com';
+// Points to your live Render backend for production / Vercel deployment:
+const RENDER_URL = 'https://raksharider.onrender.com';
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
   ? 'http://localhost:8000'
   : RENDER_URL;
