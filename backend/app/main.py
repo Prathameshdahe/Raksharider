@@ -22,10 +22,12 @@ app.add_middleware(
         "http://localhost:5051",
         "http://127.0.0.1:5051",
         "http://localhost:3000",
-        # Vercel production + preview deployments
+        # Vercel production
         "https://raksharider.vercel.app",
-        "https://raksharider-*.vercel.app",
     ],
+    # allow_origins does EXACT string matching, so "https://raksharider-*.vercel.app"
+    # never matched anything. Preview deployments need a regex.
+    allow_origin_regex=r"https://raksharider(-[a-z0-9-]+)?\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,7 +53,19 @@ def root():
 
 @app.get("/health")
 def health():
+    """
+    Reports configuration as well as liveness. A deploy that boots but cannot
+    reach Supabase or sign evidence URLs should say so here rather than failing
+    later on a request the user cannot interpret.
+    """
+    import os
+    from app.database.supabase import missing_env
+
+    absent = missing_env()
     return {
-        "status": "healthy",
-        "message": "Backend is running"
+        "status": "healthy" if not absent else "misconfigured",
+        "message": "Backend is running" if not absent
+                   else "Missing environment variables: " + ", ".join(absent),
+        "missing_env": absent,
+        "azure_evidence_configured": bool(os.getenv("AZURE_STORAGE_CONNECTION_STRING")),
     }

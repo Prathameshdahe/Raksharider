@@ -260,6 +260,16 @@ class StorageService:
             return None
 
     @staticmethod
+    def object_size(path: str, bucket: str = "videos") -> int:
+        """Size in bytes of an object in the bucket; 0 if it does not exist."""
+        try:
+            info = supabase.storage.from_(bucket).info(path)
+            return int((info or {}).get("size") or 0)
+        except Exception as e:
+            logger.warning(f"Object info failed for {bucket}/{path}: {e}")
+            return 0
+
+    @staticmethod
     def create_signed_upload_url(
         filename: str,
     ) -> dict:
@@ -333,3 +343,34 @@ class StorageService:
                 "Failed to create signed upload URL: "
                 f"{str(e)}"
             )
+
+# ── Azure Blob (evidence frames + detection video live here; DB stores blob paths, never URLs) ──
+
+class AzureNotConfigured(RuntimeError):
+    pass
+
+
+def sign_azure_blob(blob_path: str, minutes: int = 15, container: str | None = None) -> dict:
+    """Read-only SAS URL for one blob. Raises AzureNotConfigured when the env / library is missing."""
+    from datetime import datetime, timedelta, timezone
+
+    conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn:
+        raise AzureNotConfigured("AZURE_STORAGE_CONNECTION_STRING is not set on the backend")
+    try:
+        from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+    except ImportError as e:  # pragma: no cover
+        raise AzureNotConfigured("azure-storage-blob is not installed") from e
+
+    container = container or os.getenv("AZURE_EVIDENCE_CONTAINER", "evidence")
+    svc = BlobServiceClient.from_connection_string(conn)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    sas = generate_blob_sas(
+        account_name=svc.account_name,
+        container_name=container,
+        blob_name=blob_path,
+        account_key=svc.credential.account_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=expires,
+    )
+    return {"url": f"{svc.url.rstrip('/')}/{container}/{blob_path}?{sas}", "expires_at": expires.isoformat()}
