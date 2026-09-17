@@ -2,6 +2,7 @@ services:
   - type: web
     name: roadwatch-backend
     runtime: python
+    rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -11,8 +12,10 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: TEST_USER_EMAIL
+      - key: AZURE_STORAGE_CONNECTION_STRING
         sync: false
-      - key: TEST_USER_PASSWORD
-        sync: false
+      - key: AZURE_EVIDENCE_CONTAINER
+        value: evidence
+      - key: AZURE_VIDEOS_CONTAINER
+        value: videos
     healthCheckPath: /health

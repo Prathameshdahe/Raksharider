@@ -9,3 +9,7 @@ data/
 # Dev artifacts
 *.DS_Store
 Thumbs.db
+
+# Never ship raw footage frames (real plates/faces) - only sample-*.jpg are used
+assets/frame-*.jpg
+assets/evidence_*.jpg
