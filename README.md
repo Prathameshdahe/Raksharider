@@ -1,387 +1,151 @@
-# RoadWatch.AI
+# RoadWatch.AI (RakshaRide)
 
-> **AI-powered traffic violation detection.** Upload a dashcam video, get an automated violation report, and route flagged cases to a human officer for review.
+> AI-assisted traffic-violation detection from dashcam clips. The pipeline finds vehicles,
+> attaches every finding to **one** tracked vehicle with its own evidence, and a human
+> reviewer decides before anything counts. Nothing issues a penalty automatically.
 
----
-
-## Project Structure
-
-```
-RoadWatch.AI/
-├── frontend/             ← PWA (deploy to Vercel)
-├── DriveTrust-Backend/   ← FastAPI REST API (deploy to Render)
-├── model-pipeline/       ← AI detection worker (run locally, needs GPU)
-├── evidence/             ← Sample evidence output (gitignored in production)
-├── start.bat             ← One-command local launcher (Windows)
-└── README.md
-```
-
-> **Note:** `DriveTrust-Backend` will be renamed to `backend` — close VS Code and rename in Windows Explorer if the folder still shows the old name.
-
----
-
-## How It Works
+## Layout
 
 ```
-User uploads video
-       │
-       ▼
-  frontend (Vercel)
-  PWA drag-drop UI
-       │ POST /videos/upload
-       ▼
-  DriveTrust-Backend (Render)
-  FastAPI — saves record,
-  sets status = 'unprocessed'
-       │ writes to Supabase DB
-       ▼
-  Supabase (PostgreSQL)
-  videos table queue
-       │ claim_next_video()
-       ▼
-  model-pipeline (your laptop)
-  YOLO → ByteTrack → OCR → VLM
-       │ inserts vehicle_records
-       │ uploads evidence → Azure
-       ▼
-  frontend dashboard
-  live violation cards via
-  Supabase Realtime
+RakshaRide/
+├── frontend/          static web app (Vercel) — role-aware dashboard, NOT a PWA
+├── backend/           FastAPI (Render) — auth, uploads, review, admin; role checks live here
+│   ├── API.md         endpoint contract (frontend ↔ backend)
+│   └── database/      SQL to run in Supabase (see "Database setup")
+├── new ai pipeline/   detection pipeline + queue worker (runs on a laptop with the models)
+│   ├── pipeline/contract.py   the ONE schema shared by pipeline and worker
+│   └── tests/                 115 unit tests, no GPU or network needed
+└── start.bat          local launcher (backend :8000, frontend :5051, worker)
 ```
 
----
+## How a clip flows
 
-## Tech Stack
+```
+citizen uploads ──► backend: quota + size check, signed upload URL, row status 'uploading'
+                    client PUTs file to Supabase Storage, backend verifies the object → 'unprocessed'
+worker (laptop) ──► claim_next_video()  fair round-robin across uploaders, 2h lease, zombie reaper, pause switch
+                    run_pipeline.run()  per-vehicle findings → verdicts → per-track evidence JPEGs
+                    ONE transaction: vehicle_records + violations + videos.status='processed' (or 'failed' + reason)
+DB triggers     ──► notifications to the uploader; reviewers get "new clip awaiting review"
+reviewer        ──► confirms / rejects with a reason (audit row + score ledger written on confirm)
+```
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Vanilla HTML/CSS/JS, Supabase JS SDK, PWA |
-| Backend API | Python 3.11, FastAPI, uvicorn |
-| Database | Supabase (PostgreSQL) + Row Level Security |
-| Auth | Supabase Auth (JWT) |
-| AI Pipeline | YOLOv8, ByteTrack, EasyOCR, Gemini Vision |
-| Evidence Storage | Azure Blob Storage |
-| Deployment | Vercel (frontend) + Render (backend) |
+## Roles
 
----
+| Role (DB value) | UI label | Can |
+|---|---|---|
+| `citizen` | Citizen | upload (10/day, 200 MB), see own clips with masked plates, get alerts |
+| `officer` | Reviewer | everything above + review queue, confirm/reject with reason, correct plate/type |
+| `admin` | Admin | everything + queue health, pause/resume intake, requeue/retry, user roles, audit log |
 
-## Local Development
+Signup **always** creates a citizen; "I am a traffic officer" only records a request an admin
+must approve. Role is read from `public.profiles.role` (server-side) — never from JWT metadata.
+The frontend hiding a button is cosmetic; `require_role()` in the backend is the boundary.
 
-### Prerequisites
-- Python 3.11+
-- Node.js not required (pure static frontend)
-- GPU recommended for AI pipeline (RTX 3060 or similar)
+## Quick start (local)
 
-### One-Command Start
 ```bat
-cd c:\Users\DELL\Desktop\RakshaRide
 .\start.bat
 ```
 
-This runs 5 stages:
-1. **Preflight** — checks venvs, `.env` files, ports
-2. **Backend** — starts FastAPI on `:8000`, polls `/health`
-3. **Frontend** — serves PWA on `:5051`
-4. **AI Worker** — starts queue polling loop
-5. **Summary** — prints all URLs, opens browser
-
-### Manual Start (if start.bat fails)
+Manual:
 
 ```bat
-# Backend
-cd DriveTrust-Backend
-venv\Scripts\activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Frontend (new terminal)
-cd frontend
-python -m http.server 5051
-
-# AI Worker (new terminal)
-cd model-pipeline
-.venv\Scripts\activate
-python worker.py --poll 10
+cd backend && venv\Scripts\activate && uvicorn app.main:app --port 8000 --reload
+cd frontend && python -m http.server 5051
+cd "new ai pipeline" && python worker.py --poll 10        # add --vlm to allow external model calls
 ```
 
-### Local URLs
-| Service | URL |
-|---------|-----|
-| Frontend PWA | http://localhost:5051 |
-| Backend API | http://localhost:8000 |
-| API Docs (Swagger) | http://localhost:8000/docs |
-| Admin Panel | http://localhost:5051/admin.html |
+Run one clip without the queue:
 
----
-
-## Environment Variables
-
-### Backend (`DriveTrust-Backend/.env`)
-```env
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```bat
+cd "new ai pipeline"
+python run_pipeline.py tests\sample_videos\sample-3.mp4 --track
 ```
 
-### AI Pipeline (`model-pipeline/.env`)
-```env
-# Supabase DB (for queue worker)
-DB_HOST=aws-0-ap-northeast-1.pooler.supabase.com
-DB_PORT=5432
-DB_NAME=postgres
-DB_USER=drivetrust_ai_worker.your_project_ref
-DB_PASSWORD=your_db_password
+Output: `pipeline/evidence_output/latest/report.json`, `track_log.json`, `tracks/<track_id>/*.jpg`.
 
-# Azure Blob Storage (evidence frames)
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
-AZURE_EVIDENCE_CONTAINER=evidence
-AZURE_VIDEOS_CONTAINER=videos
+## Environment
 
-# Gemini Vision (VLM tiebreaker)
-GEMINI_API_KEY=your_key
-GEMINI_VLM_MODEL=gemini-2.0-flash
+**backend/.env**
+```
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=        # backend only — never in the worker, never in git
 ```
 
-**Never commit `.env` files.** They are listed in `.gitignore`.
+**new ai pipeline/.env** (see `.env.example`)
+```
+DB_HOST= DB_PORT= DB_NAME= DB_USER=drivetrust_ai_worker.<ref> DB_PASSWORD=
+AZURE_STORAGE_CONNECTION_STRING=  AZURE_EVIDENCE_CONTAINER=evidence
+GEMINI_API_KEY= / NVIDIA_NIM_API_KEY=      # only used with --vlm
+PIPELINE_API_KEY=                          # only if you run api/main.py
+```
 
----
+The worker connects as the scoped Postgres role and refuses to start without the DB vars.
+It has **no** service key: a service key bypasses row-level security and would let a worker
+bug touch trust scores, roles or human decisions.
+
+> **Action required:** a Supabase service-role key was committed in the past (commit `a642846`,
+> old `worker.py`). Rotate it in the Supabase dashboard; the new code never reads it.
+
+## Database setup (Supabase SQL editor, in this order)
+
+1. `backend/database/auth_admin_setup.sql` — profiles, `is_admin()`
+2. `backend/database/002_rbac_queue_notifications.sql` — everything else (idempotent):
+   role guard trigger, queue columns, `vehicle_records`/`violations` shape, `violation_policy`,
+   `notifications`, `audit_log`, `score_ledger`, `system_settings`, fair `claim_next_video()`,
+   RLS for every table, worker grants, realtime publication.
+3. Create the first admin with `backend/app/scripts/create_admin_user.py` (no hardcoded admin e-mail anymore).
+4. Verify: as `drivetrust_ai_worker`, `insert into score_ledger …` must fail with permission denied.
+
+Status vocab: `videos.status` = uploading → unprocessed → processing → processed | failed.
+`vehicle_records.review_status` = clear | needs_review | confirmed | rejected.
+
+## Pipeline v2.1 — what changed and why
+
+| Bug (from the forensic review) | Fix |
+|---|---|
+| frame-wide violations copied to every vehicle | `rules.py` emits one `VehicleFinding` per vehicle; `run_pipeline.py` attributes it to exactly one track by IoU |
+| "no helmet detection" treated as "no helmet" | `no_helmet` needs a positive `no_helmet` box on the head; otherwise *unobservable* |
+| duplicate observations counted as evidence | one observation per (track, violation, frame); agreement over evaluable frames only |
+| `first_seen` was a pixel coordinate | timestamps come from frame timestamps; `contract.py` asserts `0 ≤ first ≤ last ≤ duration` |
+| pipeline/worker field names differed | `pipeline/contract.py` `VehicleRecord` is produced and parsed by both; a rename fails at parse time |
+| job "processed" even when saving failed | worker writes records, violations and status in one transaction; any failure → `failed` + reason |
+| evidence overwrote across videos / shared by all vehicles | `{video_id}/{run_id}/{track_id}/{frame}.jpg`, attached per record |
+| specialist vehicle model wiped generic detections | spatial fusion: replace only the overlapping box |
+| BGR→RGB swap before Ultralytics | removed (A/B: plate model 8 vs 5 detections on BGR; COCO neutral) |
+| red light + rider = violation | `signal_violation` disabled by policy until stop-line geometry exists |
+| wheelie from aspect ratio | review-only: can never be "confirmed" by geometry |
+| global best plate stole plates across vehicles | plates resolved strictly per track; must pass Indian format **and** a real state code |
+| severity mixed OCR quality into seriousness | `severity` = policy per violation type; `evidence_strength` = the old composite |
+| three components disagreed | clip verdict is derived from per-vehicle verdicts; VLM writes back into the vehicle state and every call is logged |
+| car merger merged tracks with empty plates | empty reads never merge; timestamps are real so time windows work |
+
+Verdict vocabulary per vehicle and violation: `confirmed | needs_review | observed_absent | unobservable | not_evaluated`.
+
+## Tests
+
+```bat
+cd "new ai pipeline" && python -m pytest tests -q          # 115 tests, ~2 s
+cd backend && venv\Scripts\python -m pytest app\tests -q   # 23 tests
+```
+
+`tests/test_attribution.py` is the golden test: two motorcycles, one helmetless rider → exactly one flagged track.
 
 ## Deployment
 
-### Overview
+- **Frontend** → Vercel (static). Set `RENDER_URL` in `frontend/app.js` if the backend URL changes.
+- **Backend** → Render, start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`; env vars above.
+  Replace the `"*"` CORS entry in `app/main.py` with the exact Vercel origin before going public.
+- **Worker** → laptop with GPU, or `docker compose up` in `new ai pipeline/` (CPU image).
 
-| Component | Host | Why |
-|-----------|------|-----|
-| Frontend PWA | **Vercel** | Static files, free, CDN |
-| FastAPI Backend | **Render** | Python runtime, free tier |
-| AI Worker | **Your laptop** | Needs GPU; polls cloud DB |
-| Database | **Supabase** | Already running |
-| Evidence files | **Azure Blob** | Already configured |
+## Known gaps / next
 
-The AI worker stays local because it loads 4 YOLO models (~130 MB) and benefits heavily from GPU. It connects to the cloud Supabase DB over the internet — works fine locally.
-
----
-
-### Step 1 — Deploy Backend to Render
-
-1. **Push `DriveTrust-Backend/` to its own GitHub repo** (separate from frontend):
-   ```bash
-   cd DriveTrust-Backend
-   git init
-   git add .
-   git commit -m "Initial backend"
-   git remote add origin https://github.com/your-username/roadwatch-backend.git
-   git push -u origin main
-   ```
-
-2. **Create Render Web Service:**
-   - Go to [render.com](https://render.com) → **New → Web Service**
-   - Connect your `roadwatch-backend` repo
-   - Settings:
-     ```
-     Runtime:       Python 3
-     Build Command: pip install -r requirements.txt
-     Start Command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-     Instance Type: Free
-     ```
-
-3. **Add environment variables in Render → Environment tab:**
-   ```
-   SUPABASE_URL               = (from your .env)
-   SUPABASE_ANON_KEY          = (from your .env)
-   SUPABASE_SERVICE_ROLE_KEY  = (from your .env)
-   ```
-
-4. **Deploy and verify:**
-   ```
-   https://roadwatch-backend.onrender.com/health
-   https://roadwatch-backend.onrender.com/docs
-   ```
-   → You should see `{"status":"healthy"}` and the Swagger UI.
-
-5. **Copy your Render URL** — you'll need it for the next step.
-
----
-
-### Step 2 — Update Frontend with Render URL
-
-Open [`frontend/app.js`](frontend/app.js) line 10 and replace the placeholder:
-
-```js
-// Before:
-const RENDER_URL = 'https://roadwatch-backend.onrender.com';
-
-// After (your actual URL):
-const RENDER_URL = 'https://your-actual-service.onrender.com';
-```
-
----
-
-### Step 3 — Deploy Frontend to Vercel
-
-1. **Push `frontend/` to its own GitHub repo:**
-   ```bash
-   cd frontend
-   git init
-   git add .
-   git commit -m "Initial frontend"
-   git remote add origin https://github.com/your-username/roadwatch-frontend.git
-   git push -u origin main
-   ```
-
-2. **Create Vercel project:**
-   - Go to [vercel.com](https://vercel.com) → **Add New Project**
-   - Import your `roadwatch-frontend` repo
-   - Framework Preset: **Other** (it's static HTML)
-   - No build command needed
-   - Click **Deploy**
-
-3. **Copy your Vercel URL** (e.g., `https://roadwatch-ai.vercel.app`)
-
----
-
-### Step 4 — Add Vercel URL to Backend CORS
-
-Open [`DriveTrust-Backend/app/main.py`](DriveTrust-Backend/app/main.py) and replace the placeholder:
-
-```python
-# Replace:
-"https://roadwatch-ai.vercel.app",
-
-# With your actual URL:
-"https://your-actual-app.vercel.app",
-```
-
-Then **remove the `"*"` wildcard line** and redeploy the backend:
-```bash
-git add app/main.py
-git commit -m "Add Vercel URL to CORS"
-git push
-```
-Render redeploys automatically on push.
-
----
-
-### Step 5 — Verify End-to-End
-
-1. Open your Vercel URL in the browser
-2. Sign in with test credentials
-3. Upload a short dashcam video
-4. Watch the 8-stage pipeline animation
-5. Open the `AI Worker` terminal on your laptop — you should see:
-   ```
-   [worker] Claimed video: <video_id>
-   [worker] Uploading evidence frames to Azure...
-   [worker] Video <video_id> processed successfully.
-   ```
-6. Check the Report/Dashboard tab — violation cards should appear live
-
----
-
-## Database Schema (Supabase)
-
-### Tables
-
-| Table | Purpose |
-|-------|---------|
-| `videos` | Upload queue — status: `unprocessed → processing → processed/failed` |
-| `vehicle_records` | Per-vehicle results from AI pipeline |
-| `violations` | Individual violations detected per vehicle |
-
-### RLS Policies
-All three tables have Row Level Security enabled with policies for:
-- `anon` / `authenticated` — SELECT only
-- `authenticated` — UPDATE on violations (for officer review)
-- `drivetrust_ai_worker` — ALL (queue claim + insert results)
-
-### Supabase DB Function
-```sql
--- Atomically claims next unprocessed video (prevents race conditions)
-SELECT * FROM claim_next_video();
-```
-
----
-
-## AI Pipeline (model-pipeline/)
-
-**Runs locally — never deployed to cloud.**
-
-### 8 Detection Stages
-1. **Frame Extraction** — samples every 0.5s
-2. **YOLO Detection** — 4 models (COCO, helmet, plate, vehicle class)
-3. **ByteTrack** — persistent vehicle IDs across frames
-4. **Rules + Heuristics** — helmet, phone, wheelie, erratic, signal
-5. **OCR** — EasyOCR/PaddleOCR plate reading with consensus vote
-6. **Aggregation** — clip-level verdict + severity score
-7. **VLM Tiebreaker** — Gemini Vision on borderline cases
-8. **Report** — JSON + evidence JPEGs → Azure Blob Storage
-
-### Run Manually (for testing)
-```bash
-cd model-pipeline
-.venv\Scripts\activate
-python run_pipeline.py path\to\video.mp4 --track --vlm
-```
-
-### Models (in `model-pipeline/models/`)
-| File | Purpose |
-|------|---------|
-| `yolov8n.pt` | COCO object detection |
-| `helmet_model.pt` | Helmet detection |
-| `ampr.pt` | License plate detection |
-| `classifiacation.pt` | Vehicle class |
-
-> Model weights are gitignored (too large). Back them up separately.
-
----
-
-## Azure Evidence Storage
-
-Evidence frames (annotated JPEGs) and the evidence video are uploaded to Azure Blob Storage after each video is processed.
-
-**Configure in `model-pipeline/.env`:**
-```env
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=roadwatch;AccountKey=YOUR_KEY;EndpointSuffix=core.windows.net
-AZURE_EVIDENCE_CONTAINER=evidence
-AZURE_VIDEOS_CONTAINER=videos
-```
-
-**Get your connection string:**
-Azure Portal → Storage accounts → roadwatch → Access keys → key1 → Connection string
-
-> ⚠️ Rotate the key immediately if it was ever visible in a screenshot or chat.
-
-**Test Azure connectivity:**
-```bash
-cd model-pipeline
-.venv\Scripts\activate
-python -c "from azure_storage import _get_client; c = _get_client(); print('Connected:', c.account_name)"
-```
-
----
-
-## Known Issues & Gotchas
-
-| Issue | Fix |
-|-------|-----|
-| Render free tier sleeps after 15min | Open backend URL 1min before demo |
-| CORS error on deployed site | Add exact Vercel URL to `main.py` allow_origins, redeploy backend |
-| `claim_next_video()` returns None | Queue is empty — upload a video first |
-| Azure upload skipped | Fill in `AZURE_STORAGE_CONNECTION_STRING` in `model-pipeline/.env` |
-| Worker can't download video | Ensure `blob_url` or `video_url` is set on the videos row |
-
----
-
-## Test Credentials
-```
-Email:    drivetrust.test@gmail.com
-Password: drivetrust123
-```
-
----
-
-## Contributing
-This is a research/demo project. To report issues or suggest features, open a GitHub issue.
-
----
-
-*RoadWatch.AI — automated assistance for traffic officers. All enforcement decisions are made by humans.*
+- Retraining is on hold until attribution has been validated on a hand-labelled clip; training on the old
+  misattributed labels teaches the wrong thing.
+- Notifications are one-per-event; a daily digest (one message for "your 8 clips: 2 flagged") is a follow-up.
+- Citizens see masked plates on their own uploads (server-side). A "my vehicle was flagged" view needs a
+  plate-claim/verification step that does not exist yet.
+- `missing_plate` is never raised per vehicle: the plate detector's recall is too low for absence to mean anything.
+- `api/main.py` (legacy `/analyze`) now needs `PIPELINE_API_KEY`; it still runs the older clip-level path.

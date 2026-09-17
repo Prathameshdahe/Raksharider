@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.database.supabase import supabase
 from app.schemas.auth import SignUpRequest, LoginRequest, ProfileUpdateRequest, ProfileResponse
@@ -64,12 +65,16 @@ def sign_up(payload: SignUpRequest):
 
         user_id = str(user.id)
 
-        # 2. Ensure profile exists in public.profiles (upsert)
+        # 2. Ensure profile exists in public.profiles (upsert).
+        # Role is ALWAYS citizen; an "officer" request is only recorded for admin approval.
+        wants_officer = (payload.role or "").lower() == "officer"
         profile_data = {
             "id": user_id,
             "email": payload.email,
             "full_name": payload.full_name or payload.email.split("@")[0],
-            "role": payload.role or "citizen",
+            "role": "citizen",
+            "requested_role": "officer" if wants_officer else None,
+            "role_requested_at": datetime.now(timezone.utc).isoformat() if wants_officer else None,
             "badge_number": payload.badge_number,
             "phone": payload.phone,
         }
@@ -125,13 +130,12 @@ def login(payload: LoginRequest):
             logger.warning("[auth] Profile fetch warning: %s", pe)
 
         if not profile:
-            # Auto-provision if missing
+            # Auto-provision if missing. Role is never taken from user_metadata.
             profile = {
                 "id": user_id,
                 "email": res.user.email,
                 "full_name": (res.user.user_metadata or {}).get("full_name") or res.user.email.split("@")[0],
-                "role": (res.user.user_metadata or {}).get("role", "citizen"),
-                "badge_number": (res.user.user_metadata or {}).get("badge_number"),
+                "role": "citizen",
             }
             try:
                 supabase.table("profiles").upsert(profile).execute()
@@ -159,34 +163,50 @@ def login(payload: LoginRequest):
         )
 
 
+PORTAL = {"citizen": "user", "officer": "reviewer", "admin": "admin"}
+NAV = {
+    "user": ["upload", "submissions", "alerts", "profile"],
+    "reviewer": ["queue", "my_cases", "not_supported_lane", "alerts", "profile"],
+    "admin": ["live", "queue", "cases", "escalations", "users", "quality", "audit", "settings", "alerts", "profile"],
+}
+
+
 @router.get("/me")
 def get_me(current_user=Depends(get_current_user)):
-    """Return authenticated user identity and profile."""
+    """Identity + profile + which portal the frontend should open (role checks stay in the backend)."""
     user_id = current_user["id"]
-    profile = None
-    try:
-        p_res = supabase.table("profiles").select("*").eq("id", user_id).execute()
-        if p_res.data and len(p_res.data) > 0:
-            profile = p_res.data[0]
-    except Exception as e:
-        logger.warning("[auth] Error fetching profile: %s", e)
-
+    portal = PORTAL.get(current_user.get("role"), "user")
     return {
         "user_id": user_id,
         "email": current_user.get("email"),
-        "profile": profile or {
+        "profile": current_user.get("profile") or {
             "id": user_id,
             "email": current_user.get("email"),
             "role": "citizen"
-        }
+        },
+        "portal": portal,
+        "nav": NAV[portal],
     }
+
+
+@router.post("/presence")
+def presence(current_user=Depends(get_current_user)):
+    """Heartbeat (every 60 s from the frontend) → profiles.last_seen_at; powers the admin "users online" tile."""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        supabase.table("profiles").update({"last_seen_at": now}).eq("id", current_user["id"]).execute()
+    except Exception as e:
+        logger.warning("[auth] presence update failed: %s", e)
+    return {"success": True, "data": {"last_seen_at": now}}
 
 
 @router.put("/profile")
 def update_profile(payload: ProfileUpdateRequest, current_user=Depends(get_current_user)):
     """Update profile details for current authenticated user."""
     user_id = current_user["id"]
-    update_data = {k: v for k, v in payload.dict().items() if v is not None}
+    # role / badge_number are never self-editable.
+    editable = {"full_name", "phone", "avatar_url"}
+    update_data = {k: v for k, v in payload.dict().items() if v is not None and k in editable}
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields provided to update")
 

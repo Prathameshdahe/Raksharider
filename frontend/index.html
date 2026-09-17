@@ -4,14 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#12151C">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="RoadWatch.AI">
 <meta name="description" content="AI traffic violation detection. Upload dashcam footage. A human always reviews before anything is confirmed.">
 <title>RoadWatch.AI — Safer Roads, Smarter Tomorrow</title>
 <link rel="icon" type="image/png" href="icons/favicon.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="manifest" href="manifest.json">
 <!-- Supabase JS —— CDN, safe to load publicly -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -189,10 +185,60 @@ img{display:block;max-width:100%}
   overflow-y:auto;
 }
 #login-screen.active{display:flex}
-/* Strict two-way mutual exclusion: login screen and main app can NEVER display together */
-body:has(#login-screen.active) #app{display:none !important}
+/* Strict mutual exclusion: landing, login screen and main app can NEVER display together */
+body:has(#login-screen.active) #app,body:has(#login-screen.active) #landing{display:none !important}
 body:has(#app.active) #login-screen{display:none !important;visibility:hidden !important;pointer-events:none !important}
-body:has(#app.active) #cursor-grid{display:none !important}
+body:has(#app.active) #cursor-grid,body:has(#app.active) #landing{display:none !important}
+#login-back{position:fixed;top:14px;left:14px;z-index:4;background:none;border:1px solid rgba(251,250,247,.18);color:rgba(251,250,247,.7);border-radius:10px;padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;cursor:pointer}
+#login-back:hover{color:var(--warm);border-color:var(--warm)}
+
+/* ── Public landing ──────────────────────────────────────── */
+#landing{display:none;min-height:100vh;background:var(--warm);position:relative;z-index:1}
+#landing.active{display:block;animation:fadeUp .35s ease-out both}
+.land-head{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;background:rgba(251,250,247,.86);backdrop-filter:blur(18px);border-bottom:1px solid var(--navy12)}
+.land-head .brand{display:flex;align-items:center;gap:8px;font-family:'Archivo',sans-serif;font-weight:800;font-size:15px}
+.land-head .cta-row{margin:0;gap:8px}
+.land-head .btn-primary,.land-head .btn-outline{padding:9px 14px;font-size:13px}
+.land-main{max-width:1040px;margin:0 auto;padding:0 16px 48px}
+.land-hero{padding:40px 0 8px}
+.land-hero .hero-h1{max-width:20ch}
+.land-hero .hero-body{font-size:16px}
+.land-steps{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:8px}
+.land-step{border-radius:var(--r);padding:18px;background:rgba(251,250,247,.7);border:1px solid var(--navy12)}
+.land-step .n{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.4px;color:var(--signal);margin-bottom:8px}
+.land-step h3{font-family:'Archivo',sans-serif;font-size:17px;letter-spacing:-.3px;margin-bottom:6px}
+.land-step p{font-size:13px;line-height:1.6;color:var(--navy72)}
+.land-note{border-radius:var(--r);padding:18px 20px;background:var(--navy);color:rgba(251,250,247,.82);font-size:13.5px;line-height:1.65;margin-top:8px}
+.land-note b{color:var(--warm)}
+.land-note a{color:#ff8a70}
+.land-foot{padding:24px 0 0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)}
+.plate-mask{position:absolute;background:rgba(18,21,28,.55);backdrop-filter:blur(6px);border:1px dashed rgba(251,250,247,.6);border-radius:3px}
+@media(min-width:768px){.land-hero{padding:64px 0 16px}.land-main{padding:0 24px 64px}}
+
+/* ── v4 bits: forms, evidence scrubber, quality bars ─────── */
+.hint{font-size:11.5px;color:var(--navy60);margin-top:5px;line-height:1.45}
+.two-col{display:grid;gap:0 14px;grid-template-columns:1fr}
+@media(min-width:720px){.two-col{grid-template-columns:1fr 1fr}}
+.check-row{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.5;color:var(--navy72);margin:6px 0 10px;cursor:pointer}
+.check-row input{width:18px;height:18px;flex:none;margin-top:2px;accent-color:var(--signal)}
+.ev-big img{width:100%;max-height:360px;object-fit:contain;background:var(--navy);border-radius:12px;border:1px solid var(--navy18)}
+.scrub{display:flex;gap:8px;overflow-x:auto;padding:8px 0 6px;-webkit-overflow-scrolling:touch;align-items:flex-start}
+.thumb{flex:none;position:relative;width:132px;cursor:pointer;border-radius:10px;border:2px solid transparent;padding:2px}
+.thumb.current{border-color:var(--signal)}
+.thumb.dropped img{opacity:.35}
+.thumb img{width:100%;height:76px;object-fit:cover;border-radius:8px;background:var(--navy8)}
+.thumb-cap{display:block;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:var(--navy60);margin-top:3px;letter-spacing:.5px}
+.thumb input{position:absolute;top:6px;right:6px;width:16px;height:16px;accent-color:var(--signal)}
+.bar-row{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,2fr) auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--navy8);font-size:12.5px}
+.bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:10px;border-radius:5px;background:var(--navy8);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--signal)}
+.bar-num{font-family:'IBM Plex Mono',monospace;font-size:11px;min-width:2ch;text-align:right}
+tr.muted td{opacity:.55}
+.tag.mono{font-size:10.5px;letter-spacing:.3px}
+#bottom-nav{overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+#bottom-nav::-webkit-scrollbar{display:none}
+#bottom-nav .nav-item{min-width:62px;flex:1 0 62px}
 /* Cursor grid lives in z-index:0 behind everything */
 /* ── Watchdog Animated Logo ──────────────────────────────── */
 .logo-wrap{
@@ -305,6 +351,8 @@ body:has(#app.active) #cursor-grid{display:none !important}
   border-color:var(--signal);background:rgba(255,74,38,.16);color:var(--warm);
   box-shadow:0 0 0 3px rgba(255,74,38,.1);
 }
+.officer-check{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:10px 12px;border-radius:var(--r12);border:1px solid rgba(251,250,247,.14);background:rgba(18,21,28,.45);color:rgba(251,250,247,.72);font-size:12.5px;font-weight:600;cursor:pointer;line-height:1.35}
+.officer-check input{width:16px;height:16px;accent-color:var(--signal);flex:none;cursor:pointer}
 .badge-field{display:none}
 .badge-field.show{display:flex}
 .auth-helper-text{
@@ -575,6 +623,7 @@ body:has(#app.active) #cursor-grid{display:none !important}
 .stage-name.running{color:var(--signal);font-weight:600}
 .stage-name.done{color:var(--green);font-weight:500}
 .stage-meta{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--navy40);white-space:nowrap}
+@media(max-width:640px){.stage-meta{white-space:normal;text-align:right;max-width:55%}}
 
 /* ── Dashboard Section ───────────────────────────────────── */
 .dash-header-row{
@@ -790,6 +839,216 @@ body:has(#app.active) #cursor-grid{display:none !important}
 @media(prefers-color-scheme:dark){
   /* Intentionally keep light mode — dark splash, then light app */
 }
+
+/* ══════════════════════════════════════════════════════════
+   APP SHELL v3 — sidebar (≥1024px) / bottom nav (phones)
+   ══════════════════════════════════════════════════════════ */
+#app{display:none;min-height:100vh;position:relative;padding-bottom:0}
+#app.active{display:block}
+#sidebar{display:none}
+#app-body{min-height:100vh;display:flex;flex-direction:column;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+#app-header{
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;justify-content:flex-start;gap:10px;
+  padding:8px 16px;min-height:56px;
+  background:rgba(251,250,247,.86);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  border-bottom:1px solid var(--navy12);
+}
+#header-title{font-family:'Archivo',sans-serif;font-weight:700;font-size:16px;letter-spacing:-.3px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.header-brand{cursor:pointer}
+.icon-btn{
+  width:40px;height:40px;border-radius:12px;flex:none;position:relative;
+  border:1px solid var(--navy12);background:rgba(251,250,247,.7);color:var(--navy);
+  display:inline-flex;align-items:center;justify-content:center;transition:border-color var(--transition);
+}
+.icon-btn:hover{border-color:var(--navy)}
+.icon-btn svg{width:20px;height:20px}
+.badge-count{
+  position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
+  background:var(--signal);color:#fff;font-family:'Archivo',sans-serif;font-weight:700;font-size:10px;
+  display:flex;align-items:center;justify-content:center;
+}
+.badge-count[hidden]{display:none}
+.user-chip{min-height:40px}
+#app-main{flex:1;width:100%;max-width:1120px;margin:0 auto;padding:0 16px 32px}
+.page{display:none;padding:0;max-width:none}
+.page.active{display:block;animation:fadeUp .3s ease-out both}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:22px 0 14px}
+.page-head .section-title{font-size:clamp(22px,5vw,30px);margin-bottom:2px}
+.page-head .section-sub{font-size:13px}
+.page-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-width:0;max-width:100%}
+
+/* nav */
+.nav-item{min-height:48px;min-width:0;padding:6px 2px}
+.nav-item span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-item .nav-badge{position:absolute;top:4px;right:calc(50% - 20px)}
+.nav-item{position:relative}
+.side-brand{display:flex;align-items:center;gap:10px;padding:6px 10px 22px}
+.side-brand span{font-family:'Archivo',sans-serif;font-weight:800;font-size:15px;color:var(--warm)}
+.side-item{
+  width:100%;display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:12px;border:0;background:none;
+  color:var(--warm55);font-family:'IBM Plex Sans',sans-serif;font-weight:600;font-size:13.5px;text-align:left;
+  transition:background var(--transition),color var(--transition);position:relative;min-height:44px;
+}
+.side-item svg{width:19px;height:19px;flex:none}
+.side-item:hover{background:var(--warm14);color:var(--warm)}
+.side-item.active{background:rgba(255,74,38,.18);color:var(--warm)}
+.side-item .nav-badge{margin-left:auto;position:static}
+.side-foot{margin-top:auto;padding:14px 10px 0;border-top:1px solid var(--warm14);font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.4px;color:rgba(251,250,247,.35)}
+.nav-badge{
+  min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--signal);color:#fff;
+  font-family:'Archivo',sans-serif;font-weight:700;font-size:10px;display:inline-flex;align-items:center;justify-content:center;
+}
+.nav-badge[hidden]{display:none}
+
+/* tiles */
+.tiles{display:grid;gap:10px;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:22px}
+.tile{border-radius:var(--r12);padding:14px 14px 12px;background:rgba(251,250,247,.7);backdrop-filter:blur(12px);border:1px solid var(--navy12);min-width:0}
+.tile-num{font-family:'Archivo',sans-serif;font-weight:800;font-size:clamp(24px,5vw,32px);letter-spacing:-1px;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile-label{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:1.1px;color:var(--navy40);margin-top:5px;text-transform:uppercase}
+.tile-sub{font-size:11.5px;color:var(--navy60);margin-top:4px}
+
+/* chips */
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.8px;padding:4px 9px;border-radius:20px;white-space:nowrap;text-transform:uppercase;border:1px solid transparent}
+.chip-green{background:rgba(46,139,87,.14);color:#1a6636;border-color:rgba(46,139,87,.3)}
+.chip-amber{background:rgba(184,134,11,.12);color:#7a5c06;border-color:rgba(184,134,11,.35)}
+.chip-red{background:rgba(255,74,38,.1);color:#c43818;border-color:rgba(255,74,38,.25)}
+.chip-grey{background:rgba(18,21,28,.07);color:var(--navy60);border-color:var(--navy12)}
+.chip-live::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;animation:ping 1.2s ease-in-out infinite}
+
+/* list rows */
+.row-card{
+  display:flex;gap:12px;align-items:center;padding:12px 14px;margin-bottom:8px;
+  border:1px solid var(--navy12);border-radius:14px;background:rgba(251,250,247,.7);
+  cursor:pointer;transition:border-color var(--transition);min-width:0;text-align:left;width:100%;font:inherit;color:inherit;
+}
+.row-card:hover{border-color:var(--navy40)}
+.row-card.selected{border-color:var(--signal);box-shadow:0 0 0 3px var(--signal10)}
+.row-main{flex:1;min-width:0}
+.row-title{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-meta{font-size:11.5px;color:var(--navy60);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-right{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.empty{padding:36px 16px;text-align:center;color:var(--navy60);font-size:13px;border:1px dashed var(--navy18);border-radius:var(--r);background:rgba(251,250,247,.5)}
+.empty b{display:block;color:var(--navy);font-family:'Archivo',sans-serif;font-size:15px;margin-bottom:4px}
+.spinner{width:24px;height:24px;border:2px solid var(--signal);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;margin:28px auto}
+
+/* buttons & forms */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:40px;padding:9px 16px;border-radius:var(--r12);border:1px solid var(--navy18);background:rgba(251,250,247,.7);color:var(--navy);font-family:'Archivo',sans-serif;font-weight:600;font-size:13px;transition:all var(--transition);white-space:nowrap}
+.btn:hover{border-color:var(--navy)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-signal{background:var(--signal);border-color:var(--signal);color:#fff}
+.btn-signal:hover{background:#ff5c35}
+.btn-green{background:var(--green);border-color:var(--green);color:#fff}
+.btn-green:hover{filter:brightness(1.08)}
+.btn-danger{background:rgba(255,74,38,.1);border-color:rgba(255,74,38,.3);color:#c43818}
+.btn-sm{min-height:34px;padding:6px 11px;font-size:12px;border-radius:10px}
+.btn-ghost{background:none;border-color:transparent}
+.btn-ghost:hover{background:var(--navy8);border-color:transparent}
+.input,.select,.textarea{width:100%;padding:10px 12px;border:1px solid var(--navy18);border-radius:var(--r12);background:#fff;font-family:inherit;font-size:14px;color:var(--navy);outline:none;min-height:40px}
+.input:focus,.select:focus,.textarea:focus{border-color:var(--signal);box-shadow:0 0 0 3px var(--signal10)}
+.textarea{min-height:88px;resize:vertical}
+.field{margin-bottom:12px}
+.field label{display:block;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.2px;color:var(--navy60);margin-bottom:5px;text-transform:uppercase}
+.seg{display:inline-flex;background:rgba(18,21,28,.07);border:1px solid var(--navy12);border-radius:var(--r12);padding:3px;gap:2px;max-width:100%;overflow-x:auto}
+.seg button{padding:7px 12px;border:0;border-radius:10px;background:transparent;color:var(--navy60);font-family:'Archivo',sans-serif;font-weight:600;font-size:12.5px;min-height:34px;white-space:nowrap;transition:all var(--transition)}
+.seg button.active{background:var(--warm);color:var(--navy);box-shadow:var(--shadow)}
+
+/* cards / detail */
+.panel{border-radius:var(--r);padding:16px;background:rgba(251,250,247,.72);backdrop-filter:blur(12px);border:1px solid var(--navy12);margin-bottom:14px;min-width:0}
+.panel-title{font-family:'Archivo',sans-serif;font-weight:700;font-size:16px;letter-spacing:-.3px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px;margin-top:8px}
+.kv dt{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--navy40);letter-spacing:.6px;padding-top:2px}
+.kv dd{color:var(--navy);word-break:break-word;min-width:0}
+.plate{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:17px;letter-spacing:.6px}
+.frames{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-top:10px;-webkit-overflow-scrolling:touch}
+.frames a{flex:none}
+.frames img{width:150px;height:92px;object-fit:cover;border-radius:10px;border:1px solid var(--navy18);background:var(--navy8)}
+.verdict{border-top:1px solid var(--navy8);padding:9px 0}
+.verdict-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.verdict-type{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600}
+.verdict-reason{font-size:12.5px;line-height:1.55;color:var(--navy72);margin-top:5px}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.clip-video{width:100%;max-height:320px;border-radius:12px;background:var(--navy);margin-top:10px}
+.clips-layout{display:block}
+.clips-layout.has-detail #clips-list-wrap{display:none}
+#clip-detail{display:none}
+.clips-layout.has-detail #clip-detail{display:block}
+.back-link{display:inline-flex;align-items:center;gap:6px;background:none;border:0;color:var(--signal);font-weight:600;font-size:13px;padding:8px 0;min-height:40px}
+.review-card{border-radius:var(--r);padding:16px;background:rgba(251,250,247,.72);border:1px solid var(--navy12);box-shadow:var(--shadow);margin-bottom:12px;min-width:0}
+.review-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.progress{height:8px;border-radius:4px;background:var(--navy12);overflow:hidden;margin-top:10px}
+.progress i{display:block;height:100%;width:0;background:var(--signal);transition:width .2s}
+.stage-list-static{margin-top:4px}
+.stage-list-static .pipeline-stage{padding:8px 2px}
+.stage-list-static .stage-dot{background:var(--navy18)}
+
+/* tables */
+.table-wrap{border-radius:var(--r);overflow:auto;border:1px solid var(--navy12);margin-bottom:14px;-webkit-overflow-scrolling:touch}
+.admin-table td{white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.admin-table td.wrap{white-space:normal;min-width:200px}
+.admin-table .select{min-height:34px;padding:5px 8px;font-size:12px;width:auto}
+
+/* notifications */
+#drawer-backdrop{position:fixed;inset:0;z-index:118;background:rgba(18,21,28,.45);opacity:0;pointer-events:none;transition:opacity .25s}
+#drawer-backdrop.open{opacity:1;pointer-events:auto}
+#notif-drawer{
+  position:fixed;top:0;right:0;bottom:0;width:min(400px,100vw);z-index:120;
+  background:var(--warm);box-shadow:-12px 0 40px rgba(18,21,28,.25);
+  transform:translateX(100%);transition:transform .25s cubic-bezier(.2,.7,.2,1);
+  display:flex;flex-direction:column;
+}
+#notif-drawer.open{transform:none}
+.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--navy12)}
+.drawer-head h3{font-family:'Archivo',sans-serif;font-weight:700;font-size:16px}
+.drawer-list{flex:1;overflow-y:auto}
+.notif{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--navy8);cursor:pointer;text-align:left;width:100%;background:none;border-left:0;border-right:0;border-top:0;font:inherit;color:inherit;min-width:0}
+.notif:hover{background:var(--navy8)}
+.notif.unread{background:rgba(255,74,38,.05)}
+.notif-bar{width:4px;border-radius:2px;flex:none;align-self:stretch;background:var(--navy18)}
+.notif-bar.info{background:var(--green)}
+.notif-bar.warning{background:var(--amber)}
+.notif-bar.critical{background:var(--signal)}
+.notif-main{flex:1;min-width:0}
+.notif-title{font-weight:600;font-size:13px}
+.notif.unread .notif-title{color:var(--navy)}
+.notif-body{font-size:12px;color:var(--navy60);margin-top:2px;line-height:1.45}
+.notif-time{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--navy40);margin-top:4px}
+.notif-dot{width:8px;height:8px;border-radius:50%;background:var(--signal);flex:none;margin-top:6px}
+
+/* modal */
+#modal-backdrop{position:fixed;inset:0;z-index:130;background:rgba(18,21,28,.55);display:none;align-items:center;justify-content:center;padding:16px}
+#modal-backdrop.open{display:flex}
+.modal{background:var(--warm);border-radius:18px;padding:20px;width:100%;max-width:460px;max-height:90vh;overflow:auto;animation:scaleIn .2s ease-out both}
+.modal h3{font-family:'Archivo',sans-serif;font-weight:700;font-size:18px;letter-spacing:-.3px;margin-bottom:4px}
+.modal p.sub{font-size:12.5px;color:var(--navy60);margin-bottom:14px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+
+#toast{white-space:normal;max-width:calc(100vw - 32px);text-align:center;bottom:calc(84px + env(safe-area-inset-bottom))}
+
+@media(max-width:1023px){
+  .user-chip{padding:4px}
+  .user-chip-name,.user-role-tag{display:none}
+}
+@media(min-width:640px){
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+  #app-main{padding:0 24px 40px}
+}
+@media(min-width:1024px){
+  #app.active{display:grid;grid-template-columns:236px minmax(0,1fr)}
+  #sidebar{display:flex;flex-direction:column;position:sticky;top:0;height:100vh;background:var(--navy);padding:22px 14px 18px;overflow-y:auto}
+  #bottom-nav{display:none}
+  #app-body{padding-bottom:0}
+  #app-header{padding:10px 32px;min-height:64px}
+  #app-header .header-brand{display:none}
+  #header-title{font-size:20px}
+  #app-main{padding:0 32px 48px}
+  #toast{bottom:32px}
+  .clips-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-items:start}
+  .clips-layout.has-detail{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr)}
+  .clips-layout.has-detail #clips-list-wrap{display:block}
+  .back-link{display:none}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+}
 </style>
 </head>
 <body>
@@ -810,8 +1069,64 @@ body:has(#app.active) #cursor-grid{display:none !important}
   </div>
 </div>
 
+<!-- ░░ PUBLIC LANDING (logged-out visitors) ░░ -->
+<div id="landing">
+  <header class="land-head">
+    <div class="brand"><div class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline src="logo.webm"></video></div>ROADWATCH<span style="color:#FF4A26">.AI</span></div>
+    <div class="cta-row"><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button></div>
+  </header>
+  <main class="land-main">
+    <section class="land-hero">
+      <h1 class="hero-h1">Saw dangerous driving? Send the clip. A person decides.</h1>
+      <p class="hero-body">RoadWatch checks dashcam and phone footage for unsafe behaviour on Indian roads.<br>The AI reads every frame and writes a report; a trained reviewer confirms or rejects every finding.<br>Nothing is ever fined here — confirmed cases go to the traffic authority, who decide what happens next.</p>
+      <div class="cta-row"><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button></div>
+    </section>
+
+    <section class="section" style="padding-top:8px">
+      <h2 class="section-title" style="font-size:clamp(20px,5vw,26px)">How a clip is handled</h2>
+      <div class="land-steps">
+        <div class="land-step"><div class="n">01 · YOU</div><h3>Upload and describe</h3><p>Pick two-wheeler or four-wheeler, say what you saw, add the plate if you read it. Your file goes straight to private storage.</p></div>
+        <div class="land-step"><div class="n">02 · AI FIRST</div><h3>Every frame, every vehicle</h3><p>The pipeline tracks each vehicle, reads plates twice, and answers your claim: supported, not supported, or cannot tell. Serious reports go first.</p></div>
+        <div class="land-step"><div class="n">03 · HUMAN ALWAYS DECIDES</div><h3>A reviewer rules on each finding</h3><p>Confirmed, rejected with a reason, or inconclusive. You see every decision on your submission. Nothing counts until a person says so.</p></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title" style="font-size:clamp(20px,5vw,26px)">One sample analysis</h2>
+      <p class="section-sub" style="margin-bottom:14px">A frame from a recorded run. Plates in this sample are masked and the labels below are fictional.</p>
+      <div class="demo-frame-wrap">
+        <img src="assets/sample-frame.jpg" width="960" height="843" alt="Sample road frame with the number plates masked">
+        <div class="detection-overlay">
+          <div class="det-box" style="left:9.8%;top:54.6%;width:78.8%;height:43.4%"><span class="det-label">Vehicle #1 · car · 89%</span></div>
+          <div class="det-box-white" style="left:24.4%;top:76.8%;width:16.6%;height:4.4%"><span class="det-label-white">plate · MH00XX0000 (sample)</span></div>
+          <div class="det-box-white" style="left:76%;top:47%;width:24%;height:36%;border-color:rgba(251,250,247,.75)"><span class="det-label-white" style="right:-2px;left:auto">Vehicle #2 · plate hidden</span></div>
+          <div class="scan-line"></div>
+          <div class="hud-box">
+            <div style="color:#B8860B;font-weight:600">RESULT&nbsp;&nbsp;&nbsp;needs review</div>
+            <div>CLAIM&nbsp;&nbsp;&nbsp;&nbsp;lane cutting</div>
+            <div>PLATE&nbsp;&nbsp;&nbsp;&nbsp;MH00XX0000 · sample</div>
+            <div>NEXT&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;human reviewer</div>
+          </div>
+        </div>
+      </div>
+      <div class="evidence-grid">
+        <figure><img src="assets/sample-t15.jpg" width="480" height="270" alt="Sample evidence frame, plates masked" loading="lazy"><figcaption>t=15.5s · frame 1 of 3</figcaption></figure>
+        <figure><img src="assets/sample-t16.jpg" width="480" height="270" alt="Sample evidence frame, plates masked" loading="lazy"><figcaption>t=16.0s · same vehicle</figcaption></figure>
+        <figure><img src="assets/sample-t17.jpg" width="480" height="270" alt="Sample evidence frame, plates masked" loading="lazy"><figcaption>t=16.5s · plate crop masked</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="land-note"><b>Privacy.</b> Uploaders see only the plate they typed; every other vehicle is "Vehicle #2, #3" with no plate. Evidence lives in private storage and opens only through short-lived links. Reviewer names and notes are never shown to uploaders. Rejected findings are kept as unconfirmed observations, never as penalties. RoadWatch never issues or collects a fine.</div>
+      <div class="cta-row" style="margin-top:18px"><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button></div>
+      <div class="land-foot">AI RECOMMENDS · HUMANS DECIDE · AUTHORITIES ENFORCE</div>
+    </section>
+  </main>
+</div>
+
 <!-- ░░ LOGIN (lamp + cursor grid + panel) ░░ -->
 <div id="login-screen">
+  <button id="login-back" type="button" onclick="closeLogin()">← BACK</button>
   <!-- Light cone — appears when lamp is on -->
   <div id="lamp-cone"></div>
 
@@ -874,7 +1189,7 @@ body:has(#app.active) #cursor-grid{display:none !important}
           Continue with Google
         </button>
       </div>
-      <div class="login-admin-link"><a href="admin.html">Admin access →</a></div>
+      <div class="login-admin-link"><a href="index.html#admin">Admin access →</a></div>
     </div>
 
     <!-- SIGN UP VIEW -->
@@ -882,16 +1197,10 @@ body:has(#app.active) #cursor-grid{display:none !important}
       <h2 class="login-h2">Create your account</h2>
       <p class="login-sub">Join RoadWatch to submit dashcam clips and track incident reviews.</p>
 
-      <div class="auth-role-select">
-        <button class="role-pill active" id="role-citizen" type="button" onclick="selectRole('citizen')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          Citizen
-        </button>
-        <button class="role-pill" id="role-officer" type="button" onclick="selectRole('officer')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Traffic Officer
-        </button>
-      </div>
+      <label class="officer-check" for="signup-officer">
+        <input type="checkbox" id="signup-officer" onchange="toggleOfficerRequest(this)">
+        <span>I am a traffic officer — request reviewer access</span>
+      </label>
 
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -938,404 +1247,96 @@ body:has(#app.active) #cursor-grid{display:none !important}
 
 <!-- ░░ MAIN APP ░░ -->
 <div id="app">
-  <header id="app-header">
-    <div class="header-brand" onclick="switchPage('home')">
-      <div class="logo-wrap size-sm light-logo">
-        <video autoplay loop muted playsinline src="logo.webm"></video>
+  <!-- Desktop sidebar -->
+  <aside id="sidebar">
+    <div class="side-brand">
+      <div class="logo-wrap size-md dark-logo">
+        <video autoplay loop muted playsinline src="logo-white.webm"></video>
       </div>
       <span>ROADWATCH<span style="color:#FF4A26">.AI</span></span>
     </div>
-    <span class="advisory-badge">ADVISORY ONLY</span>
-    
-    <div class="header-right" id="header-user-wrap" style="position:relative">
-      <div class="user-chip" id="user-chip-btn" onclick="toggleUserMenu()">
-        <div class="user-avatar-badge" id="header-avatar-badge">G</div>
-        <span class="user-chip-name" id="header-user-name">Signed out</span>
-        <span class="user-role-tag" id="header-user-role">Auth required</span>
-      </div>
+    <nav id="side-nav" aria-label="Main"></nav>
+    <div class="side-foot">ADVISORY ONLY · A HUMAN DECIDES</div>
+  </aside>
 
-      <div class="user-dropdown" id="user-menu-dropdown">
-        <div class="dropdown-user-info">
-          <div class="dropdown-name" id="menu-user-name">Signed out</div>
-          <div class="dropdown-email" id="menu-user-email">Not signed in</div>
+  <div id="app-body">
+    <header id="app-header">
+      <div class="header-brand" data-action="nav" data-page="overview">
+        <div class="logo-wrap size-sm light-logo">
+          <video autoplay loop muted playsinline src="logo.webm"></video>
         </div>
-        <hr class="dropdown-divider">
-        <button class="dropdown-item" type="button" onclick="switchPage('dashboard'); closeUserMenu();">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          Dashboard
-        </button>
-        <button class="dropdown-item" type="button" onclick="switchPage('upload'); closeUserMenu();">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></line></svg>
-          Upload Footage
-        </button>
-        <button class="dropdown-item" type="button" onclick="switchPage('trust'); closeUserMenu();">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-          Trust & Ethics
-        </button>
-        <hr class="dropdown-divider">
-        <button class="dropdown-item danger" id="btn-auth-action" type="button" onclick="handleAuthAction()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-          <span id="auth-action-text">Sign Out</span>
+      </div>
+      <h1 id="header-title">Overview</h1>
+      <button class="icon-btn" id="bell-btn" type="button" data-action="drawer-open" aria-label="Notifications">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="badge-count" id="bell-count" hidden>0</span>
+      </button>
+      <div class="header-right" id="header-user-wrap" style="position:relative">
+        <div class="user-chip" id="user-chip-btn" onclick="toggleUserMenu()">
+          <div class="user-avatar-badge" id="header-avatar-badge">?</div>
+          <span class="user-chip-name" id="header-user-name">Signed out</span>
+          <span class="user-role-tag" id="header-user-role">—</span>
+        </div>
+        <div class="user-dropdown" id="user-menu-dropdown">
+          <div class="dropdown-user-info">
+            <div class="dropdown-name" id="menu-user-name">Signed out</div>
+            <div class="dropdown-email" id="menu-user-email">Not signed in</div>
+          </div>
+          <hr class="dropdown-divider">
+          <button class="dropdown-item" type="button" data-action="nav" data-page="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            Home
+          </button>
+          <button class="dropdown-item" type="button" data-action="nav" data-page="alerts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            Alerts
+          </button>
+          <button class="dropdown-item" type="button" data-action="nav" data-page="help">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            Help
+          </button>
+          <hr class="dropdown-divider">
+          <button class="dropdown-item danger" id="btn-auth-action" type="button" onclick="handleAuthAction()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span id="auth-action-text">Sign Out</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="app-main"><div id="page" class="page active"></div></main>
+  </div>
+
+  <!-- Mobile bottom navigation (built by JS per role) -->
+  <nav id="bottom-nav" aria-label="Main"></nav>
+
+  <!-- Notification drawer -->
+  <div id="drawer-backdrop" data-action="drawer-close"></div>
+  <aside id="notif-drawer" aria-label="Notifications">
+    <div class="drawer-head">
+      <h3>Alerts</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-sm btn-ghost" type="button" data-action="mark-all-read">Mark all read</button>
+        <button class="icon-btn" type="button" data-action="drawer-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
       </div>
     </div>
-  </header>
-
-  <!-- Pages -->
-  <div id="page-home" class="page active">
-    <!-- Hero -->
-    <section class="section">
-      <div class="logo-wrap size-lg light-logo" id="hero-logo">
-        <video autoplay loop muted playsinline src="logo.webm"></video>
-      </div>
-      <h1 class="hero-h1">Your dashcam clip, read carefully — not judged automatically.</h1>
-      <p class="hero-body">Upload road footage. Four models find vehicles, read plates, gather evidence across frames — then a person decides whether anything is real.</p>
-      <div class="cta-row">
-        <button class="btn-primary" onclick="switchPage('upload')">Try an upload</button>
-        <button class="btn-outline" onclick="switchPage('demo')">See a sample analysis</button>
-      </div>
-      <div class="stats-strip">
-        <div class="stat-cell">
-          <div class="stat-num" style="color:#12151C">0</div>
-          <div class="stat-label">automatic fines issued — ever. The system recommends; it never charges.</div>
-        </div>
-        <div class="stat-cell">
-          <div class="stat-num" style="color:var(--green)">100<span style="font-size:18px">%</span></div>
-          <div class="stat-label">of flags reviewed by a human before they mean anything</div>
-        </div>
-        <div class="stat-cell">
-          <div class="stat-num" style="color:#12151C">56</div>
-          <div class="stat-label">vehicles tracked in the sample clip — 1 flagged, 55 left alone</div>
-        </div>
-      </div>
-    </section>
-    <div class="section-divider"></div>
-    <!-- How it works (Tier cards preview) -->
-    <section class="section">
-      <h2 class="section-title">How a flag becomes real</h2>
-      <p class="section-sub" style="margin-bottom:18px">Three outcomes, none of them ends in a fine on their own.</p>
-      <div class="tier-grid">
-        <div class="tier-card" style="background:rgba(46,139,87,.09);border:1px solid rgba(46,139,87,.32)">
-          <div class="tier-icon" style="background:var(--green)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.4" style="width:17px;height:17px"><path d="M20 6L9 17l-5-5"/></svg>
-          </div>
-          <div class="tier-title">Confirmed</div>
-          <p class="tier-body">The same violation appears in enough sampled frames, with enough agreement between them, that a glitch can't explain it. It still goes to a person before it counts.</p>
-          <div class="tier-meta" style="color:var(--green)">min evidence frames · agreement ratio</div>
-        </div>
-        <div class="tier-card" style="background:rgba(184,134,11,.10);border:1px solid rgba(184,134,11,.36)">
-          <div class="tier-icon" style="background:var(--amber)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.2" style="width:17px;height:17px"><path d="M12 8v5"/><circle cx="12" cy="17" r="1.2" fill="#FBFAF7" stroke="none"/><circle cx="12" cy="12" r="9"/></svg>
-          </div>
-          <div class="tier-title">Needs review</div>
-          <p class="tier-body">The frames disagree. A second, slower model looks at the evidence and can only confirm or downgrade — never invent a new violation. Then a person reads both opinions.</p>
-          <div class="tier-meta" style="color:#8a6508">vision-language tiebreaker · human last</div>
-        </div>
-        <div class="tier-card" style="background:var(--navy8);border:1px solid var(--navy12)">
-          <div class="tier-icon" style="background:var(--navy)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.2" style="width:17px;height:17px"><path d="M5 12h14"/></svg>
-          </div>
-          <div class="tier-title">Insufficient evidence</div>
-          <p class="tier-body">Blur, distance, a plate at the wrong angle. The report says so in plain words instead of guessing a plate that looks close enough.</p>
-          <div class="tier-meta" style="color:var(--navy40)">state-code whitelist · confidence floor</div>
-        </div>
-      </div>
-    </section>
-    <div style="height:32px"></div>
-  </div>
-
-  <!-- Demo Page -->
-  <div id="page-demo" class="page">
-    <section class="section">
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-        <div>
-          <h2 class="section-title">See it work</h2>
-          <p class="section-sub">One frame from a real Mumbai clip. Toggle the detection layer.</p>
-        </div>
-        <div class="toggle-row">
-          <button class="toggle-btn active" id="btn-raw" onclick="setView('raw')">Raw</button>
-          <button class="toggle-btn" id="btn-analysed" onclick="setView('analysed')">Analysed</button>
-        </div>
-      </div>
-      <div class="demo-frame-wrap">
-        <img id="demo-img" src="assets/frame-demo.jpg" alt="Road frame from dashcam clip">
-        <div class="detection-overlay" id="det-overlay" style="display:none">
-          <!-- Vehicle box -->
-          <div class="det-box" style="left:9.8%;top:54.6%;width:78.8%;height:43.4%">
-            <span class="det-label">ID 33 · car · 89%</span>
-          </div>
-          <!-- Plate box -->
-          <div class="det-box-white" style="left:24.4%;top:76.8%;width:16.6%;height:4.4%">
-            <span class="det-label-white">plate · MH02FX9484</span>
-          </div>
-          <!-- Second vehicle -->
-          <div class="det-box-white" style="left:76%;top:47%;width:24%;height:36%;border-color:rgba(251,250,247,.75)">
-            <span class="det-label-white" style="right:-2px;left:auto">ID 34 · car · 68%</span>
-          </div>
-          <!-- Scan line -->
-          <div class="scan-line"></div>
-          <!-- HUD -->
-          <div class="hud-box">
-            <div style="color:#B8860B;font-weight:600">STATUS&nbsp;&nbsp;needs_review</div>
-            <div>SEVERITY 0.62</div>
-            <div>PLATE&nbsp;&nbsp;&nbsp;&nbsp;MH02FX••••</div>
-            <div>FRAME&nbsp;&nbsp;&nbsp;&nbsp;33 / 41</div>
-          </div>
-        </div>
-      </div>
-      <p class="mono" style="font-size:10px;letter-spacing:.6px;color:var(--navy40);margin-top:9px">Overlay values taken from the pipeline's own run: 41 frames sampled, frame consistency 92.7%.</p>
-      <div class="evidence-grid">
-        <figure>
-          <img src="assets/evidence_t15.5.jpg" alt="Evidence frame t=15.5s">
-          <figcaption>t=15.5s · match confirmed</figcaption>
-        </figure>
-        <figure>
-          <img src="assets/evidence_t16.0.jpg" alt="Evidence frame t=16.0s">
-          <figcaption>t=16.0s · same track</figcaption>
-        </figure>
-        <figure>
-          <img src="assets/evidence_t16.5.jpg" alt="Evidence frame t=16.5s">
-          <figcaption>t=16.5s · plate crop</figcaption>
-        </figure>
-      </div>
-    </section>
-    <div style="height:32px"></div>
-  </div>
-
-  <!-- Upload Page -->
-  <div id="page-upload" class="page">
-    <section class="section">
-      <h2 class="section-title">Send us a clip</h2>
-      <p class="section-sub" style="margin-bottom:18px">Nothing is shared until you've seen the result yourself.</p>
-      <div class="vehicle-type-row">
-        <button class="vehicle-btn selected" id="btn-two" onclick="selectVehicle('two')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="width:18px;height:18px"><circle cx="7" cy="17" r="3"/><circle cx="17" cy="17" r="3"/><path d="M7 17V9l5-5 5 8v5"/><path d="M7 12h5"/></svg>
-          Two-wheeler
-        </button>
-        <button class="vehicle-btn" id="btn-four" onclick="selectVehicle('four')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" style="width:18px;height:18px"><rect x="2" y="8" width="20" height="10" rx="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8V6a2 2 0 012-2h8a2 2 0 012 2v2"/></svg>
-          Four-wheeler
-        </button>
-      </div>
-      <label class="drop-zone" id="drop-zone">
-        <input type="file" id="file-input" accept="video/*" onchange="handleFile(event)">
-        <div class="drop-icon-row">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#FF4A26" stroke-width="1.7" style="width:30px;height:30px;flex:none"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
-          <div>
-            <div class="drop-title">Drop a video here, or tap to choose</div>
-            <div class="drop-sub">MP4 or AVI · up to 60 seconds · <span id="vehicle-label">Two-wheeler</span> selected</div>
-          </div>
-        </div>
-      </label>
-      <div class="pipeline-box" id="pipeline-box">
-        <div class="pipeline-header">
-          <span class="pipeline-title">PIPELINE</span>
-          <span class="mono" style="font-size:10px;color:var(--navy40)" id="stage-counter">Ready</span>
-        </div>
-        <div id="stage-list"></div>
-      </div>
-    </section>
-    <div style="height:32px"></div>
-  </div>
-
-  <!-- Dashboard Page -->
-  <div id="page-dashboard" class="page">
-    <section class="section">
-      <div class="dash-header-row">
-        <div>
-          <h2 class="section-title" style="margin-bottom:2px">Live detections</h2>
-          <p id="dash-subtitle" class="section-sub" style="font-size:12px">Loading from Supabase…</p>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div class="live-indicator">
-            <div class="live-dot" id="live-dot" title="Connecting…"></div>
-            LIVE
-          </div>
-          <button class="btn-json-toggle" id="json-btn" onclick="toggleJson()">Raw JSON</button>
-        </div>
-      </div>
-      <!-- ── Live Stats Bar ── -->
-      <div class="dash-stats-bar">
-        <div class="dash-stat">
-          <div class="dash-stat-num" id="stat-total" style="color:var(--navy)">—</div>
-          <div class="dash-stat-label">Total</div>
-        </div>
-        <div class="dash-stat">
-          <div class="dash-stat-num" id="stat-pending" style="color:#b8860b">—</div>
-          <div class="dash-stat-label">Pending</div>
-        </div>
-        <div class="dash-stat">
-          <div class="dash-stat-num" id="stat-confirmed" style="color:var(--green)">—</div>
-          <div class="dash-stat-label">Confirmed</div>
-        </div>
-        <div class="dash-stat">
-          <div class="dash-stat-num" id="stat-dismissed" style="color:var(--navy40)">—</div>
-          <div class="dash-stat-label">Dismissed</div>
-        </div>
-      </div>
-      <pre class="json-pre" id="json-pre" style="display:none"></pre>
-      <div class="cards-grid" id="cards-grid"></div>
-    </section>
-    <div class="no-flag-section">
-      <div class="no-flag-header">
-        <h2>Why we didn't flag this</h2>
-        <p>Cases the first pass got wrong. Published because a detector you can't audit is a detector you shouldn't trust.</p>
-      </div>
-      <div class="no-flag-grid">
-        <div class="no-flag-cell">
-          <div class="no-flag-label">DROPPED · no_helmet + triple_riding</div>
-          <p class="no-flag-body">Track 47, motorcycle. Flagged for two violations at once on a crowded frame.</p>
-          <p class="no-flag-quote">“The rider is clearly wearing a helmet, and there is only one rider on the motorcycle, making the ‘triple_riding’ and ‘no_helmet’ detections false positives.”</p>
-          <div class="no-flag-source">— second-opinion model, verbatim from the run log</div>
-        </div>
-        <div class="no-flag-cell">
-          <div class="no-flag-label">BLOCKED · helmet check on a car</div>
-          <p class="no-flag-body">A car can never receive a helmet, triple-riding or wheelie violation, however confident the detector is. The class gate refuses it before the rule engine runs.</p>
-          <div class="code-snippet">car → no_helmet<br>→ rejected: not a two-wheeler</div>
-        </div>
-        <div class="no-flag-cell">
-          <div class="no-flag-label">WITHHELD · impossible plate</div>
-          <p class="no-flag-body">Track 21 read as <span class="mono">WH01DD4952</span> at 42% confidence. No Indian state uses the code WH, so the read is thrown away rather than corrected into someone else’s plate.</p>
-          <div class="code-snippet">WH → not in 36-code whitelist<br>→ plate withheld</div>
-        </div>
-      </div>
+    <div class="drawer-list" id="drawer-list"></div>
+    <div style="padding:10px 16px;border-top:1px solid var(--navy12)">
+      <button class="btn" style="width:100%" type="button" data-action="nav" data-page="alerts">Open all alerts</button>
     </div>
+  </aside>
 
-    <!-- Officer Review Queue -->
-    <div class="review-queue-section">
-      <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px">
-        <h2 class="section-title" style="font-size:21px">Officer review queue</h2>
-        <span class="mono" style="font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)">SAMPLE · 3 WAITING</span>
-      </div>
-      <div id="review-queue-list"></div>
-    </div>
-
-    <!-- Footer -->
-    <footer class="page-footer">
-      <div class="section-divider" style="margin-bottom:18px"></div>
-      <p style="font-size:12.5px;line-height:1.7;color:var(--navy60);max-width:70ch;margin-bottom:10px">RoadWatch.AI output is decision support for municipal and traffic authorities. Generated alerts flag footage for human officer validation. Nothing on this page issues a penalty, and no clip is acted on without a named reviewer.</p>
-      <div class="mono" style="font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)">PROTOTYPE · PIPELINE 2.0.0 · SAFER ROADS SMARTER TOMORROW</div>
-    </footer>
-
-    <div style="height:32px"></div>
+  <!-- Modal -->
+  <div id="modal-backdrop">
+    <div class="modal" id="modal-body" role="dialog" aria-modal="true"></div>
   </div>
-
-  <!-- Bottom Navigation -->
-  <nav id="bottom-nav">
-    <button class="nav-item active" id="nav-home" onclick="switchPage('home')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12L12 4l9 8v9a1 1 0 01-1 1H15v-5H9v5H4a1 1 0 01-1-1v-9z"/></svg>
-      <span>Home</span><div class="nav-dot"></div>
-    </button>
-    <button class="nav-item" id="nav-demo" onclick="switchPage('demo')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M10 8l6 4-6 4V8z" fill="currentColor" stroke="none"/></svg>
-      <span>Demo</span><div class="nav-dot"></div>
-    </button>
-    <button class="nav-item" id="nav-upload" onclick="switchPage('upload')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
-      <span>Upload</span><div class="nav-dot"></div>
-    </button>
-    <button class="nav-item" id="nav-dashboard" onclick="switchPage('dashboard')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-      <span>Report</span><div class="nav-dot"></div>
-    </button>
-    <button class="nav-item" id="nav-trust" onclick="switchPage('trust')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
-      <span>Trust</span><div class="nav-dot"></div>
-    </button>
-  </nav>
-</div>
-
-<!-- Trust page is appended to app shell -->
-<div id="page-trust" class="page" style="display:none">
-  <!-- background gradient same as main app -->
-  <div style="position:fixed;inset:0;pointer-events:none;background:radial-gradient(900px 520px at 82% -6%,rgba(255,74,38,.14),transparent 60%),radial-gradient(760px 480px at 6% 34%,rgba(18,21,28,.09),transparent 62%),var(--warm);z-index:-1"></div>
-  <main style="position:relative;max-width:1040px;margin:0 auto;padding:0 16px;padding-bottom:86px">
-
-    <section class="section" style="padding-top:32px">
-      <h2 class="section-title">How a flag becomes real</h2>
-      <p class="section-sub" style="max-width:60ch;margin-bottom:20px">Three outcomes, and none of them ends in a fine on their own. The pipeline writes its own uncertainty into the report.</p>
-      <div class="tier-grid">
-        <div class="tier-card" style="background:rgba(46,139,87,.09);border:1px solid rgba(46,139,87,.32)">
-          <div class="tier-icon" style="background:var(--green)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.4" style="width:17px;height:17px"><path d="M20 6L9 17l-5-5"/></svg>
-          </div>
-          <div class="tier-title">Confirmed</div>
-          <p class="tier-body">The same violation appears in enough sampled frames, with enough agreement between them, that a glitch can't explain it. It still goes to a person before it counts.</p>
-          <div class="tier-meta" style="color:var(--green)">min evidence frames · agreement ratio</div>
-        </div>
-        <div class="tier-card" style="background:rgba(184,134,11,.10);border:1px solid rgba(184,134,11,.36)">
-          <div class="tier-icon" style="background:var(--amber)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.2" style="width:17px;height:17px"><path d="M12 8v5"/><circle cx="12" cy="17" r="1.2" fill="#FBFAF7" stroke="none"/><circle cx="12" cy="12" r="9"/></svg>
-          </div>
-          <div class="tier-title">Needs review</div>
-          <p class="tier-body">The frames disagree. A second, slower model looks at the evidence and can only confirm or downgrade — never invent a new violation. Then a person reads both opinions.</p>
-          <div class="tier-meta" style="color:#8a6508">vision-language tiebreaker · human last</div>
-        </div>
-        <div class="tier-card" style="background:var(--navy8);border:1px solid var(--navy12)">
-          <div class="tier-icon" style="background:var(--navy)">
-            <svg viewBox="0 0 24 24" fill="none" stroke="#FBFAF7" stroke-width="2.2" style="width:17px;height:17px"><path d="M5 12h14"/></svg>
-          </div>
-          <div class="tier-title">Insufficient evidence</div>
-          <p class="tier-body">Blur, distance, a plate at the wrong angle. The report says so in plain words instead of guessing a plate that looks close enough.</p>
-          <div class="tier-meta" style="color:var(--navy40)">state-code whitelist · confidence floor</div>
-        </div>
-      </div>
-    </section>
-
-    <div class="section-divider"></div>
-
-    <!-- Why we didn't flag — full 3 cells -->
-    <section class="section">
-      <div style="border-radius:var(--r);overflow:hidden;border:1px solid var(--navy18)">
-        <div style="background:var(--navy);color:var(--warm);padding:22px">
-          <h2 style="font-family:'Archivo',sans-serif;font-weight:700;font-size:clamp(21px,5vw,28px);letter-spacing:-.6px;margin:0 0 7px">Why we didn't flag this</h2>
-          <p style="font-size:13.5px;line-height:1.6;color:rgba(251,250,247,.66);margin:0;max-width:56ch">Cases the first pass got wrong. Published because a detector you can't audit is a detector you shouldn't trust.</p>
-        </div>
-        <div style="display:grid;gap:1px;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));background:var(--navy18)">
-          <div style="background:rgba(251,250,247,.8);padding:19px">
-            <div class="no-flag-label">DROPPED · no_helmet + triple_riding</div>
-            <p class="no-flag-body">Track 47, motorcycle. Flagged for two violations at once on a crowded frame.</p>
-            <p class="no-flag-quote">"The rider is clearly wearing a helmet, and there is only one rider on the motorcycle, making the 'triple_riding' and 'no_helmet' detections false positives."</p>
-            <div class="no-flag-source">— second-opinion model, verbatim from the run log</div>
-          </div>
-          <div style="background:rgba(251,250,247,.8);padding:19px">
-            <div class="no-flag-label">BLOCKED · helmet check on a car</div>
-            <p class="no-flag-body">A car can never receive a helmet, triple-riding or wheelie violation, however confident the detector is. The class gate refuses it before the rule engine runs.</p>
-            <div class="code-snippet">car → no_helmet<br>→ rejected: not a two-wheeler</div>
-          </div>
-          <div style="background:rgba(251,250,247,.8);padding:19px">
-            <div class="no-flag-label">WITHHELD · impossible plate</div>
-            <p class="no-flag-body">Track 21 read as <span class="mono">WH01DD4952</span> at 42% confidence. No Indian state uses the code WH, so the read is thrown away rather than corrected into someone else's plate.</p>
-            <div class="code-snippet">WH → not in 36-code whitelist<br>→ plate withheld</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <div class="section-divider"></div>
-
-    <!-- Officer review queue -->
-    <section class="section">
-      <div style="border-radius:var(--r);padding:20px;background:rgba(251,250,247,.66);backdrop-filter:blur(14px);border:1px solid var(--navy12)">
-        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px">
-          <h2 style="font-family:'Archivo',sans-serif;font-weight:700;font-size:21px;letter-spacing:-.4px;margin:0">Officer review queue</h2>
-          <span class="mono" style="font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)">MOCK · 3 WAITING</span>
-        </div>
-        <div id="trust-queue-list"></div>
-      </div>
-    </section>
-
-    <footer class="page-footer">
-      <div class="section-divider" style="margin-bottom:18px"></div>
-      <p style="font-size:12.5px;line-height:1.7;color:var(--navy60);max-width:70ch;margin-bottom:10px">RoadWatch.AI output is decision support for municipal and traffic authorities. Generated alerts flag footage for human officer validation. Nothing on this page issues a penalty, and no clip is acted on without a named reviewer.</p>
-      <div class="mono" style="font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)">PROTOTYPE · PIPELINE 2.0.0 · SAFER ROADS SMARTER TOMORROW</div>
-    </footer>
-  </main>
 </div>
 
 <!-- Toast -->
 <div id="toast"></div>
 
-<script src="app.js?v=2.2"></script>
+<script src="app.js?v=4.0"></script>
 </body>
 </html>
