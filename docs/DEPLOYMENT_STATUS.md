@@ -70,6 +70,14 @@ only the project owner can do (dashboard clicks). Share this with the team as th
 | Supabase | REST 200, GoTrue v2.197, email + Google providers on |
 | Render | 503 "suspended by its owner" until resumed |
 
+## 5b. If the app looks old or sign-in fails with "Failed to fetch"
+
+Browsers that installed the retired PWA service worker (builds up to `app.js?v=2.2`) can keep
+serving a stale page and intercept the Supabase login request. Three layers now fix that:
+the new page unregisters any worker and clears its caches on load; `/sw.js` is a
+self-destructing worker; and opening **https://raksharider.vercel.app/reset** once sends a
+`Clear-Site-Data` header that wipes the old caches and storage (you sign in again afterwards).
+
 ## 6. Notes and limits
 
 - **Free-tier cold start.** Even with keep-alive, a redeploy or a crash means the first request takes 30–60 s. The frontend now waits and retries instead of showing an error.
