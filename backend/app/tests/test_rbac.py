@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services import storage_service
 from app.utils.auth import get_current_user
 
 USER = "11111111-1111-1111-1111-111111111111"
@@ -41,7 +42,7 @@ class FakeSupabase:
         return _Query(self, name)
 
 
-ROUTE_MODULES = ("app.routes.uploads", "app.routes.review", "app.routes.admin",
+ROUTE_MODULES = ("app.routes.uploads", "app.routes.cases", "app.routes.admin",
                  "app.services.video_service", "app.utils.audit")
 
 
@@ -64,17 +65,8 @@ def client(monkeypatch):
 def test_citizen_forbidden_on_reviewer_and_admin_routes(client):
     _, as_role = client
     c = as_role("citizen")
-    assert c.get("/review/queue").status_code == 403
+    assert c.get("/cases").status_code == 403
     assert c.get("/admin/users").status_code == 403
-
-
-def test_officer_can_read_review_queue(client):
-    fake, as_role = client
-    fake.tables["vehicle_records"] = [{"id": "r1", "video_id": "v1", "review_status": "needs_review"}]
-    fake.tables["videos"] = [{"id": "v1", "uploaded_by": OTHER}]
-    r = as_role("officer").get("/review/queue")
-    assert r.status_code == 200
-    assert r.json()["data"][0]["video"]["id"] == "v1"
 
 
 def test_officer_forbidden_on_admin(client):
@@ -88,38 +80,16 @@ def test_admin_cannot_change_own_role(client):
     assert r.status_code == 400
 
 
-def test_decision_requires_reason(client):
-    fake, as_role = client
-    fake.tables["vehicle_records"] = [{"id": "r1", "review_status": "needs_review"}]
-    c = as_role("officer")
-    assert c.post("/review/records/r1/decision", json={"decision": "confirmed"}).status_code == 422
-    assert c.post("/review/records/r1/decision", json={"decision": "confirmed", "reason": "ok"}).status_code == 422
-
-
-def test_decision_on_decided_record_conflicts_unless_admin_override(client):
-    fake, as_role = client
-    fake.tables["vehicle_records"] = [{"id": "r1", "review_status": "confirmed", "plate_text": "MH12AB1234"}]
-    body = {"decision": "rejected", "reason": "wrong plate read"}
-    assert as_role("officer").post("/review/records/r1/decision", json=body).status_code == 409
-    assert as_role("officer").post("/review/records/r1/decision", json={**body, "override": True}).status_code == 409
-    r = as_role("admin").post("/review/records/r1/decision", json={**body, "override": True})
-    assert r.status_code == 200
-    assert ("audit_log", "insert") in [(t, m) for t, m, *_ in fake.calls]
-
-
-def test_confirm_writes_ledger_then_record(client):
-    fake, as_role = client
-    fake.tables["vehicle_records"] = [{"id": "r1", "review_status": "needs_review", "plate_text": "MH12AB1234",
-                                       "review_violations": ["no_helmet"]}]
-    fake.tables["violations"] = [{"id": "x1", "vehicle_record_id": "r1", "violation_type": "no_helmet", "status": "needs_review"}]
-    fake.tables["violation_policy"] = [{"violation_type": "no_helmet", "trust_delta": -10}]
-    r = as_role("officer").post("/review/records/r1/decision", json={"decision": "confirmed", "reason": "helmet clearly missing"})
-    assert r.status_code == 200
-    writes = [(t, m) for t, m, *_ in fake.calls if m in ("insert", "update")]
-    assert writes == [("violations", "update"), ("score_ledger", "insert"), ("vehicle_records", "update")]
-    ledger = next(a[0] for t, m, a, _ in fake.calls if t == "score_ledger" and m == "insert")
-    assert ledger == [{"plate": "MH12AB1234", "vehicle_record_id": "r1", "violation_type": "no_helmet",
-                       "delta": -10, "reason": "helmet clearly missing", "actor_id": USER}]
+def test_legacy_v1_v2_routes_are_gone(client):
+    """/review/* wrote score_ledger outside the case flow; /vehicles/* had no role check; the multipart
+    /videos/upload read whole files into RAM; /auth/login rebound the shared service client to the caller."""
+    _, as_role = client
+    a = as_role("admin")
+    assert a.get("/review/queue").status_code == 404
+    assert a.get("/vehicles").status_code == 404
+    assert a.post("/videos/upload").status_code in (404, 405)   # 405: GET /videos/{id} still matches the path
+    assert a.post("/auth/login", json={"email": "x@x.io", "password": "p"}).status_code == 404
+    assert a.post("/auth/signup", json={"email": "x@x.io", "password": "p"}).status_code == 404
 
 
 def test_citizen_sees_no_plate_unless_they_claimed_it(client):
@@ -154,10 +124,27 @@ def test_upload_init_quota_and_size(client):
     assert c.post("/videos/upload/init", json=body).status_code == 429
 
 
-def test_requeue_admin_only(client):
+def test_upload_complete_stores_signed_download_url(client, monkeypatch):
+    """Private bucket: the worker fetches videos.blob_url with plain HTTP and no key, so it must be a signed read link."""
     fake, as_role = client
-    fake.tables["videos"] = [{"id": "v1", "status": "failed", "attempts": 3}]
+    fake.tables["videos"] = [{"id": "v1", "uploaded_by": USER, "status": "uploading", "local_path": "abc.mp4"}]
+    monkeypatch.setattr(storage_service.StorageService, "object_size", lambda path, bucket="videos": 1234)
+    monkeypatch.setattr(storage_service.StorageService, "signed_download_url",
+                        lambda path, bucket="videos", seconds=0: f"https://signed/{path}?token=t")
+    r = as_role("citizen").post("/videos/upload/complete", json={"video_id": "v1"})
+    assert r.status_code == 200
+    update = next(a[0] for t, m, a, _ in fake.calls if t == "videos" and m == "update")
+    assert update["blob_url"] == "https://signed/abc.mp4?token=t" and update["status"] == "unprocessed"
+
+
+def test_requeue_admin_only_and_resigns_download_url(client, monkeypatch):
+    fake, as_role = client
+    monkeypatch.setattr(storage_service.StorageService, "signed_download_url",
+                        lambda path, bucket="videos", seconds=0: f"https://signed/{path}")
+    fake.tables["videos"] = [{"id": "v1", "status": "failed", "attempts": 3, "local_path": "abc.mp4"}]
     assert as_role("officer").post("/videos/v1/requeue").status_code == 403
     assert as_role("admin").post("/videos/v1/requeue").status_code == 200
+    update = next(a[0] for t, m, a, _ in fake.calls if t == "videos" and m == "update")
+    assert update["blob_url"] == "https://signed/abc.mp4"   # the upload-time link may have expired since
     fake.tables["videos"] = [{"id": "v1", "status": "processing"}]
     assert as_role("admin").post("/videos/v1/requeue").status_code == 409

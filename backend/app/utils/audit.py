@@ -30,5 +30,9 @@ def write_audit(
         "after": after,
         "reason": reason,
     }
-    res = supabase.table("audit_log").insert(row).execute()
-    return res.data[0] if res.data else row
+    try:
+        res = supabase.table("audit_log").insert(row).execute()
+        return res.data[0] if res.data else row
+    except Exception as e:
+        logger.error("Failed to write audit log for action %s on %s/%s: %s", action, entity, entity_id, e)
+        return row

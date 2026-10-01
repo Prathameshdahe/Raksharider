@@ -3,7 +3,7 @@
 
 // ── Supabase config (anon key is safe to expose — RLS protects data) ──
 const SUPABASE_URL = 'https://fbjjoktuzirhpqqpzfbo.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZiampva3R1emlyaHBxcXB6ZmJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0MjA1MzcsImV4cCI6MjEwMDk5NjUzN30.sp9Kgpt7alImqzhzWkWo1Gx4FTzut0Fzm9IPu8fX0po';
+const SUPABASE_ANON_KEY = 'sb_publishable_OvWd5P2dTVJScryY4VGjrw_JIYpzgOU';
 
 // ── Backend API URL — local dev vs deployed Render ──
 const RENDER_URL = 'https://raksharider.onrender.com';
@@ -130,6 +130,28 @@ function failBox(e, retryAction) {
 }
 function list(arr) { return Array.isArray(arr) ? arr : (arr?.items || arr?.rows || arr?.cases || arr?.videos || arr?.users || []); }
 
+// The backend runs on Render's free tier: after 15 idle minutes the first request takes 30–60 s
+// while the instance boots, and the platform answers 502/503 meanwhile. Idempotent GETs retry
+// with backoff instead of failing, and the user is told once what is happening.
+const WAKE_DELAYS_MS = [3000, 6000, 10000, 15000];
+let wakeToastShown = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function isColdStart(status) { return status === 0 || status === 502 || status === 503 || status === 504; }
+async function fetchWithWake(url, init, { retry = true } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    let res = null, netErr = null;
+    try { res = await fetch(url, init); } catch (e) { netErr = e; }
+    const status = res ? res.status : 0;
+    if (res && !isColdStart(status)) return res;
+    if (!retry || attempt >= WAKE_DELAYS_MS.length) {
+      if (res) return res;
+      const e = new Error('Backend unreachable'); e.status = 0; e.cause = netErr; throw e;
+    }
+    if (!wakeToastShown) { wakeToastShown = true; showToast('Waking up the server (free tier) — this takes up to a minute…'); setTimeout(() => { wakeToastShown = false; }, 90000); }
+    await sleep(WAKE_DELAYS_MS[attempt]);
+  }
+}
+
 // All backend calls go through here: attaches the Supabase access token, throws on non-2xx with detail.error, unwraps {success,data}.
 async function api(path, { method = 'GET', body } = {}) {
   if (PREVIEW_USER) return previewApi(path, method);
@@ -139,18 +161,54 @@ async function api(path, { method = 'GET', body } = {}) {
     if (data?.session?.access_token) headers.Authorization = 'Bearer ' + data.session.access_token;
   } catch (_) {}
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  let res;
-  try {
-    res = await fetch(API_BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-  } catch (_) { const e = new Error('Backend unreachable'); e.status = 0; throw e; }
+  const res = await fetchWithWake(API_BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined }, { retry: method === 'GET' });
   let json = null;
   try { json = await res.json(); } catch (_) {}
   if (!res.ok) {
     const d = json?.detail;
-    const msg = (d && typeof d === 'object' && d.error) || (typeof d === 'string' && d) || json?.error || `Request failed (${res.status})`;
+    const msg = isColdStart(res.status) ? 'The server is starting up — try again in a moment.'
+      : (d && typeof d === 'object' && d.error) || (typeof d === 'string' && d) || json?.error || `Request failed (${res.status})`;
     const e = new Error(msg); e.status = res.status; throw e;
   }
   return (json && typeof json === 'object' && 'data' in json) ? json.data : json;
+}
+
+// ── Public platform status (GET /status, no auth): landing stats bar, footers, in-app strip ──
+let publicStatus = null, statusTimer = null;
+async function loadPublicStatus() {
+  if (PREVIEW_ROLE) { publicStatus = previewApi('/status', 'GET'); renderPublicStatus(); return publicStatus; }
+  try {
+    const res = await fetchWithWake(API_BASE + '/status', { method: 'GET' }, { retry: true });
+    publicStatus = res.ok ? await res.json() : { ok: false, http: res.status };
+  } catch (_) { publicStatus = { ok: false, unreachable: true }; }
+  renderPublicStatus();
+  return publicStatus;
+}
+function startStatusPolling() { clearInterval(statusTimer); loadPublicStatus(); statusTimer = setInterval(loadPublicStatus, 60000); }
+function stopStatusPolling() { clearInterval(statusTimer); statusTimer = null; }
+function fmtCount(n) { return (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('en-IN'); }
+function statusBits(d) {
+  const api = !d ? ['wait', 'checking…'] : d.unreachable ? ['bad', 'offline'] : d.ok ? ['ok', 'online'] : ['bad', d.database === 'misconfigured' ? 'misconfigured' : 'degraded'];
+  const w = d?.worker || {};
+  const worker = !d ? ['wait', 'checking…'] : !d.ok ? ['bad', 'unknown'] : w.online ? ['ok', 'online · seen ' + ago(w.last_seen)] : w.last_seen ? ['bad', 'silent · last seen ' + ago(w.last_seen)] : ['bad', 'never seen'];
+  const depth = d?.queue?.depth, proc = d?.queue?.processing;
+  const queue = !d ? ['wait', '…'] : !d.ok ? ['bad', '—'] : d.intake_paused ? ['bad', 'intake paused · ' + fmtCount(depth) + ' waiting'] : [depth ? 'ok' : 'ok', fmtCount(depth) + ' waiting · ' + fmtCount(proc) + ' running'];
+  return { api, worker, queue };
+}
+function renderPublicStatus() {
+  const d = publicStatus, bits = statusBits(d), totals = d?.totals || {};
+  document.querySelectorAll('[data-stat]').forEach(el => { el.textContent = fmtCount(totals[el.dataset.stat]); });
+  const map = { backend: bits.api, worker: bits.worker, queue: bits.queue };
+  document.querySelectorAll('[data-dot]').forEach(el => { const [cls] = map[el.dataset.dot] || ['wait']; el.className = (el.className.replace(/\b(ok|bad|wait)\b/g, '').trim() + ' ' + cls).trim(); });
+  document.querySelectorAll('[data-stat-text]').forEach(el => { const b = map[el.dataset.statText]; el.textContent = b ? b[1] : '…'; });
+}
+// One-line system strip for the portals: who is up, how long the queue is, whether intake is paused.
+function sysStrip() {
+  return `<div class="sys-strip" id="sys-strip" title="Live platform status, refreshed every minute">
+    <span><span class="ld-dot wait" data-dot="backend"></span>API <b data-stat-text="backend">checking…</b></span>
+    <span><span class="ld-dot wait" data-dot="worker"></span>AI worker <b data-stat-text="worker">checking…</b></span>
+    <span><span class="ld-dot wait" data-dot="queue"></span>Queue <b data-stat-text="queue">…</b></span>
+    <span class="sys-strip-tot"><b data-stat="clips_analysed">—</b> clips analysed · <b data-stat="cases_decided">—</b> cases decided</span></div>`;
 }
 // Supabase read wrapper: never throws, empty on error / preview.
 async function q(builder) {
@@ -242,6 +300,8 @@ function previewApi(path, method) {
   if (path.startsWith('/admin/audit')) return [{ created_at: iso(20), actor_role: 'admin', actor_id: me, action: 'case.reopen', entity: 'case', entity_id: cases[4].id, reason: 'Uploader supplied a clearer clip' }, { created_at: iso(300), actor_role: 'officer', actor_id: 'u3', action: 'case.finalize', entity: 'case', entity_id: cases[4].id, reason: '' }];
   if (path.startsWith('/admin/settings')) return { max_uploads_per_day: 10, escalation_threshold_any: 3, escalation_threshold_top: 1, retention_days: 90, worker_paused: false };
   if (path.startsWith('/evidence/sign')) return { url: 'assets/sample-t16.jpg' };
+  if (path === '/status') return { ok: true, cached: false, database: 'ok', worker: { online: true, last_seen: iso(1), silent_for_s: 60 }, intake_paused: false,
+    queue: { depth: 4, processing: 1 }, totals: { clips_submitted: 1284, clips_analysed: 1203, cases_opened: 1911, cases_decided: 1427, findings_confirmed: 905, findings_rejected: 388 } };
   return {};
 }
 
@@ -272,11 +332,13 @@ function showLanding() {
   hideAll();
   if (landingEl) landingEl.classList.add('active');
   window.scrollTo(0, 0);
+  startStatusPolling();
 }
 function showAuthScreen() { showLanding(); }
 // Opened from a landing button: lamp turns on by itself.
 window.openLogin = function(tab) {
   hideAll();
+  stopStatusPolling();
   if (loginScreen) { loginScreen.style.display = 'flex'; loginScreen.classList.add('active'); }
   if (grid) grid.style.display = 'block';
   switchAuthTab(tab === 'signup' ? 'signup' : 'signin');
@@ -555,11 +617,13 @@ function initApp() {
   // presence heartbeat: every 60 s while logged in
   const beat = () => api('/auth/presence', { method: 'POST' }).catch(() => {});
   beat(); presenceTimer = setInterval(beat, 60000);
+  startStatusPolling();
+  const ver = document.getElementById('app-foot-version'); if (ver) ver.textContent = 'web v5.0';
   route();
 }
 function teardownApp() {
   appInited = false; currentPage = null;
-  clearInterval(presenceTimer); clearInterval(pageTimer);
+  clearInterval(presenceTimer); clearInterval(pageTimer); stopStatusPolling();
   const sb = getSB();
   channels.forEach(ch => { try { sb?.removeChannel(ch); } catch (_) {} });
   channels = [];
@@ -707,16 +771,25 @@ function subRow(v) {
       <div class="row-right">${chip(s)}</div></button>`;
 }
 
+// The journey strip: where this user's clips are, as a pipeline (counts per stage).
+function journey(counts) {
+  const steps = [['uploading', 'Uploading'], ['queued', 'Queued'], ['analysing', 'AI analysing'], ['awaiting_review', 'Human review'], ['decided', 'Decided']];
+  return `<div class="journey">${steps.map(([k, label], i) => `<div class="journey-step ${counts[k] ? 'has' : ''}"><div class="journey-num">${esc(counts[k] || 0)}</div><div class="journey-label">${esc(label)}</div>${i < steps.length - 1 ? '<div class="journey-arrow">→</div>' : ''}</div>`).join('')}</div>`;
+}
 PAGE_FN.home = async function(_, silent) {
   if (!silent) setPage(head(`Hello, ${currentUser?.profile?.full_name || 'there'}`, 'Your submissions at a glance.', `<span class="chip chip-grey" id="live-chip">Connecting</span><button class="btn btn-signal" type="button" data-action="nav" data-page="upload">Upload a clip</button>`)
-    + `<div class="tiles" id="home-tiles"></div><div class="panel"><div class="panel-title">Recent submissions</div><div id="home-recent"><div class="spinner"></div></div></div>
+    + sysStrip() + `<div class="tiles" id="home-tiles"></div><div class="panel"><div class="panel-title"><span>Where your clips are</span><span class="row-meta">serious reports go first</span></div><div id="home-journey"></div></div>
+       <div class="panel"><div class="panel-title">Recent submissions</div><div id="home-recent"><div class="spinner"></div></div></div>
        <p class="decision-note" style="max-width:70ch">Everything the AI reports is <b>provisional</b> until a human reviewer decides. A decision on a finding is <b>verified</b>; nothing here is a fine or a penalty — RoadWatch never issues one.</p>`);
+  renderPublicStatus();
   const err = await loadVideos();
   if (currentPage !== 'home') return;
   const c = k => state.videos.filter(v => userStatus(v) === k).length;
   const tiles = document.getElementById('home-tiles');
   if (tiles) tiles.innerHTML = err ? failBox(err) : tile(state.videos.length, 'Uploaded') + tile(c('queued') + c('analysing') + c('uploading'), 'Analysing', 'queued or running', c('analysing') ? 'var(--amber)' : null)
     + tile(c('awaiting_review'), 'Awaiting review', 'a human is next', c('awaiting_review') ? 'var(--amber)' : null) + tile(c('decided'), 'Decided', 'verified by a reviewer', 'var(--green)');
+  const jr = document.getElementById('home-journey');
+  if (jr) jr.innerHTML = err ? '' : journey({ uploading: c('uploading'), queued: c('queued'), analysing: c('analysing'), awaiting_review: c('awaiting_review'), decided: c('decided') });
   const rec = document.getElementById('home-recent');
   if (rec) rec.innerHTML = err ? '' : (state.videos.length ? state.videos.slice(0, 5).map(subRow).join('') : empty('No submissions yet', 'Upload your first clip and follow it here.'));
   setLive(PREVIEW_USER ? 'Preview' : channels.length ? 'Live' : null);
@@ -982,9 +1055,9 @@ function caseCard(c, opts = {}) {
     </div></article>`;
 }
 PAGE_FN.queue = async function(_, silent) {
-  if (!silent) setPage(head('Queue', 'Ordered by seriousness, then age. Claim a case to lock it to you (max 3 open).', `
+  if (!silent) { setPage(head('Queue', 'Ordered by seriousness, then age. Claim a case to lock it to you (max 3 open).', `
     <div class="seg" id="queue-tabs"><button type="button" data-action="queue-tab" data-tab="normal">Normal</button><button type="button" data-action="queue-tab" data-tab="not_supported">AI: allegation not supported</button><button type="button" data-action="queue-tab" data-tab="second_opinion">Second opinion</button></div>
-    <button class="btn btn-sm" type="button" data-action="refresh">Refresh</button>`) + `<div class="review-grid" id="queue-list"><div class="spinner"></div></div>`);
+    <button class="btn btn-sm" type="button" data-action="refresh">Refresh</button>`) + sysStrip() + `<div class="review-grid" id="queue-list"><div class="spinner"></div></div>`); renderPublicStatus(); }
   document.querySelectorAll('#queue-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === state.queueTab));
   const el = document.getElementById('queue-list'); if (!el) return;
   const qs = state.queueTab === 'second_opinion' ? 'status=second_opinion' : `lane=${state.queueTab}&status=pending_review`;

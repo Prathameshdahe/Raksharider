@@ -1,8 +1,8 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.database.supabase import supabase
 from app.routes.cases import corrected_plate, sign_paths
@@ -59,11 +59,31 @@ def _get_video(video_id: str) -> Optional[dict]:
     return res.data[0] if res.data else None
 
 
-def user_status(video: dict, cases: list) -> str:
-    """Plain words for the uploader (docs §2.6 item 20)."""
+def user_status(video: dict, cases: list, worker_paused: Optional[bool] = None) -> str:
+    """Plain words for the uploader (docs §2.6 items 20, 23)."""
     s = video.get("status")
     if s == "processed":
         return "awaiting_review" if any(c.get("status") in OPEN_CASE for c in cases) else "decided"
+    if s == "unprocessed":
+        if worker_paused is None:
+            try:
+                row = supabase.table("system_settings").select("value").eq("key", "worker_paused").limit(1).execute().data
+                worker_paused = bool(row[0]["value"]) if row and row[0].get("value") is not None else False
+            except Exception:
+                worker_paused = False
+        return "Queued (intake paused)" if worker_paused else "queued"
+    if s == "processing":
+        is_retryable = video.get("error_category") in ("download", "storage", "persist")
+        time_ref = video.get("claimed_at") or video.get("uploaded_at")
+        delayed_by_time = False
+        if time_ref:
+            try:
+                t = datetime.fromisoformat(str(time_ref).replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) - t > timedelta(minutes=30):
+                    delayed_by_time = True
+            except Exception:
+                pass
+        return "Processing delayed" if (is_retryable or delayed_by_time) else "analysing"
     return USER_STATUS.get(s, s)
 
 
@@ -136,14 +156,42 @@ def complete_video_upload(body: UploadCompleteRequest, current_user=Depends(get_
     if size <= 0:
         raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Uploaded object not found in storage")
 
+    # §2.2-5: Duplicate-upload detection (SHA-256). The client should compute and send this — it
+    # already has the file in memory before upload. compute_sha256() is a fallback that downloads
+    # the object to hash it server-side: fine for a small file, but on a 512 MB Render instance a
+    # 200 MB clip pulled fully into RAM (twice, concurrently) can OOM the process. Until the
+    # frontend sends body.sha256 itself, only take the fallback under this size; larger clips just
+    # skip duplicate detection rather than risk the server.
+    SHA256_FALLBACK_MAX_BYTES = 5 * 1024 * 1024
+    sha256 = (body.sha256 or "").strip().lower()
+    if not sha256 and storage_path and size <= SHA256_FALLBACK_MAX_BYTES:
+        sha256 = StorageService.compute_sha256(storage_path)
+    if sha256:
+        existing = (
+            supabase.table("videos")
+            .select("id")
+            .eq("sha256", sha256)
+            .is_("deleted_at", "null")
+            .neq("id", video["id"])
+            .limit(1)
+            .execute()
+            .data
+        )
+        if existing:
+            raise api_error(status.HTTP_409_CONFLICT, "Duplicate upload: this video has already been submitted")
+
+    update_payload = {
+        "blob_url": StorageService.signed_download_url(storage_path),   # private bucket: worker GETs this
+        "file_size": size,
+        "status": "unprocessed",
+    }
+    if sha256:
+        update_payload["sha256"] = sha256
+
     try:
         res = (
             supabase.table("videos")
-            .update({
-                "blob_url": StorageService.get_public_url(storage_path),
-                "file_size": size,
-                "status": "unprocessed",
-            })
+            .update(update_payload)
             .eq("id", video["id"])
             .execute()
         )
@@ -151,56 +199,6 @@ def complete_video_upload(body: UploadCompleteRequest, current_user=Depends(get_
         logger.exception("Failed to complete video upload")
         raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to complete video upload: {e}")
     return {"success": True, "message": "Video upload completed", "data": _citizen_safe(res.data[0] if res.data else video)}
-
-
-# ==============================================================
-# POST /videos/upload  (legacy single-request multipart upload)
-# ==============================================================
-@router.post("/upload", status_code=status.HTTP_201_CREATED)
-def upload_video(
-    file: UploadFile = File(...),
-    vehicle_type: str = Form("two_wheeler"),
-    current_user=Depends(get_current_user),
-):
-    if file.content_type not in ALLOWED_VIDEO_TYPES:
-        raise api_error(status.HTTP_400_BAD_REQUEST, f"Invalid file type: {file.content_type}")
-    if vehicle_type not in VEHICLE_TYPES:
-        raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, "vehicle_type must be two_wheeler or four_wheeler")
-
-    file.file.seek(0, 2)
-    size = file.file.tell()
-    file.file.seek(0)
-    if size <= 0:
-        raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty file")
-    _check_size_and_quota(current_user["id"], size)
-
-    try:
-        stored = StorageService.upload_video(file)
-        record = VideoService.create_video_record(
-            filename=stored["filename"],
-            original_name=file.filename,
-            user_id=current_user["id"],
-            vehicle_type=vehicle_type,
-            status="unprocessed",
-            file_size=size,
-            blob_url=StorageService.get_public_url(stored["filename"]),
-            storage_path=stored["filename"],
-        )
-    except Exception as e:
-        logger.exception("Video upload failed")
-        raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Video upload failed: {e}")
-
-    return {
-        "success": True,
-        "message": "Video uploaded successfully",
-        "data": {
-            "video_id": record["id"],
-            "filename": record["filename"],
-            "original_name": record["original_name"],
-            "status": record["status"],
-            "uploaded_at": record["uploaded_at"],
-        },
-    }
 
 
 # ==============================================================
@@ -221,9 +219,15 @@ def list_videos(
     rows = q.order("uploaded_at", desc=True).range(offset, offset + limit - 1).execute().data or []
     ids = [v["id"] for v in rows if v.get("status") == "processed"]
     cases = supabase.table("cases").select("id, video_id, status").in_("video_id", ids).execute().data or [] if ids else []
+    worker_paused = None
+    try:
+        row = supabase.table("system_settings").select("value").eq("key", "worker_paused").limit(1).execute().data
+        worker_paused = bool(row[0]["value"]) if row and row[0].get("value") is not None else False
+    except Exception:
+        worker_paused = False
     out = []
     for v in rows:
-        v["user_status"] = user_status(v, [c for c in cases if c.get("video_id") == v["id"]])
+        v["user_status"] = user_status(v, [c for c in cases if c.get("video_id") == v["id"]], worker_paused=worker_paused)
         out.append(_citizen_safe(v) if current_user["role"] == "citizen" else v)
     return {"success": True, "data": out}
 
@@ -257,9 +261,12 @@ def get_video(video_id: str, current_user=Depends(get_current_user)):
         plate = corrected_plate([x for x in corrections if x["case_id"] == c["id"]]) or rec.get("plate_text")
         if is_citizen:
             plate = _uploader_plate(plate, claimed, c.get("track_id") in resolved_tracks)
+        vclass = rec.get("vehicle_type")
+        vtype = "two_wheeler" if vclass in ("motorcycle", "bicycle") else ("four_wheeler" if vclass else None)
         out_cases.append({
             "id": c["id"], "track_id": c.get("track_id"), "is_subject": c.get("is_subject"), "status": c.get("status"),
-            "lane": c.get("lane"), "identity_status": c.get("identity_status"), "vehicle_type": rec.get("vehicle_type"),
+            "lane": c.get("lane"), "identity_status": c.get("identity_status"),
+            "vehicle_class": vclass, "vehicle_type": vtype,
             "plate": plate,
             "findings": [{
                 "id": f["id"], "violation": f.get("violation"), "ai_result": f.get("ai_result"), "tier": f.get("tier"),
@@ -333,13 +340,11 @@ def requeue_video(video_id: str, current_user=Depends(require_role("admin"))):
     cases = supabase.table("cases").select("id, status").eq("video_id", video_id).execute().data or []
     if any(c.get("status") in ("finalized", "in_review") for c in cases):
         raise api_error(status.HTTP_409_CONFLICT, "A case on this submission is decided or under review; it can no longer be requeued")
-    res = (
-        supabase.table("videos")
-        # attempts is NOT reset: the worker derives run_id from (video_id, attempts); a reused run_id collides in persist_run_result
-        .update({"status": "unprocessed", "error_reason": None, "error_category": None, "claimed_at": None})
-        .eq("id", video_id)
-        .execute()
-    )
+    # attempts is NOT reset: the worker derives run_id from (video_id, attempts); a reused run_id collides in persist_run_result
+    update = {"status": "unprocessed", "error_reason": None, "error_category": None, "claimed_at": None}
+    if video.get("local_path"):   # private bucket: the worker's download link may have expired since upload
+        update["blob_url"] = StorageService.signed_download_url(video["local_path"])
+    res = supabase.table("videos").update(update).eq("id", video_id).execute()
     write_audit(current_user, "video.requeue", "video", video_id,
                 before={"status": video.get("status"), "attempts": video.get("attempts")},
                 after={"status": "unprocessed", "attempts": video.get("attempts")})

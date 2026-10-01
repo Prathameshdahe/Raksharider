@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 
 # Configure logging before any pipeline imports
@@ -63,7 +63,17 @@ def health():
     return {"status": "ok", "service": "raksharide-ai-pipeline", "version": "0.2.0"}
 
 
-@app.post("/analyze", tags=["Pipeline"])
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """This service runs the pipeline on any upload — never expose it without a key.
+    Set PIPELINE_API_KEY in the environment; requests must send the X-API-Key header."""
+    expected = os.environ.get("PIPELINE_API_KEY")
+    if not expected:
+        raise HTTPException(status_code=503, detail="PIPELINE_API_KEY not configured on the server")
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+@app.post("/analyze", tags=["Pipeline"], dependencies=[Depends(require_api_key)])
 async def analyze(
     file: UploadFile = File(..., description="Video (.mp4/.avi) or image (.jpg/.png)"),
     sample_interval: float = 0.5,

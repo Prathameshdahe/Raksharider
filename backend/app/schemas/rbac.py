@@ -15,19 +15,11 @@ class UploadInitRequest(BaseModel):
 
 class UploadCompleteRequest(BaseModel):
     video_id: str
+    sha256: Optional[str] = Field(default=None, max_length=64)
 
 
 class DeleteVideoRequest(BaseModel):
     reason: Optional[str] = None
-
-
-class ReviewDecisionRequest(BaseModel):
-    decision: Literal["confirmed", "rejected"]
-    reason: str = Field(min_length=5, max_length=2000)
-    corrected_plate: Optional[str] = Field(default=None, max_length=32)
-    corrected_vehicle_type: Optional[VehicleType] = None
-    violations: Optional[List[str]] = None
-    override: bool = False
 
 
 class RoleChangeRequest(BaseModel):

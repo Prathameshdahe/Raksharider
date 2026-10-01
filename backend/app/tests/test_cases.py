@@ -130,14 +130,14 @@ def test_list_and_detail_shapes(client):
     assert as_role("citizen").get("/cases").status_code == 403
     row = as_role("officer").get("/cases?lane=normal").json()["data"][0]
     assert row["plate"] == {"ai": "MH12AB1234", "confidence": 0.8, "claimed": "MH12AB1234", "corrected": "MH12AB1284"}
-    assert row["findings_count"] == 1 and row["allegation_answer"] == "supported" and row["vehicle_type"] == "motorcycle"
+    assert row["findings_count"] == 1 and row["allegation_answer"] == "supported" and row["vehicle_class"] == "motorcycle" and row["vehicle_type"] == "two_wheeler"
     assert as_role("officer").get("/cases?lane=sideways").status_code == 422
     d = as_role("officer").get("/cases/c1").json()["data"]
     assert d["uploader_claim"]["note"] == "no helmet" and d["ai"]["model_versions"] == {"helmet": "v2"}
     assert d["ai"]["vlm_calls"] == [{"track_id": 1, "model": "gemini"}]
     assert d["evidence"]["f1"][0]["url"].startswith("https://sig/v1/r1/tracks/1/a.jpg")
-    # detail carries the list enrichment: the frontend reads the same plate object and vehicle_type everywhere
-    assert d["plate"] == row["plate"] and d["vehicle_type"] == "motorcycle" and d["allegation_answer"] == "supported"
+    # detail carries the list enrichment: the frontend reads the same plate object, vehicle_class, and vehicle_type everywhere
+    assert d["plate"] == row["plate"] and d["vehicle_class"] == "motorcycle" and d["vehicle_type"] == "two_wheeler" and d["allegation_answer"] == "supported"
     assert d["plate_of_record"] == "MH12AB1284" and d["plate_history"] is None        # reviewer: history only after finalize
     fake.tables["plate_history"] = [{"plate": "MH12AB1284", "layer": "confirmed"}, {"plate": "MH12AB1284", "layer": "observed"}]
     history = as_role("admin").get("/cases/c1").json()["data"]["plate_history"]

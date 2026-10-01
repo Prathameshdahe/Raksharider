@@ -13,13 +13,12 @@ from typing import Any, List
 from app.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 REQUIRED_ENV = ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
+_ENV_VALUES = {"SUPABASE_URL": SUPABASE_URL, "SUPABASE_SERVICE_ROLE_KEY": SUPABASE_SERVICE_ROLE_KEY}
 
 
 def missing_env() -> List[str]:
     """Names of the required variables that are not set. Empty means configured."""
-    return [name for name, value in (("SUPABASE_URL", SUPABASE_URL),
-                                     ("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY))
-            if not value]
+    return [name for name in REQUIRED_ENV if not _ENV_VALUES.get(name)]
 
 
 class _LazySupabase:

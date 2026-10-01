@@ -61,6 +61,7 @@ class VideoService:
             supabase.table("videos")
             .select("id", count="exact")
             .eq("uploaded_by", user_id)
+            .neq("status", "uploading")
             .gte("uploaded_at", start)
             .is_("deleted_at", "null")
             .execute()

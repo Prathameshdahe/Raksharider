@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, status
 from app.database.supabase import supabase
 from app.routes.evidence import sign_or_503
 from app.schemas.rbac import PauseRequest, ReasonRequest, ReassignRequest, RoleChangeV3Request, SettingsRequest
+from app.services.storage_service import StorageService
 from app.utils.audit import write_audit
 from app.utils.auth import api_error, require_role
 
@@ -110,13 +111,37 @@ def pause_queue(body: PauseRequest, current_user=Depends(admin)):
 # ==============================================================
 @router.post("/queue/retry-failed")
 def retry_failed(current_user=Depends(admin)):
-    res = (
+    failed = (
         supabase.table("videos")
-        .update({"status": "unprocessed", "error_reason": None, "error_category": None, "claimed_at": None})  # attempts kept: fresh run_id
-        .eq("status", "failed").is_("deleted_at", "null")
+        .select("id, local_path")
+        .eq("status", "failed")
+        .in_("error_category", ["download", "storage", "persist"])
+        .is_("deleted_at", "null")
         .execute()
+        .data
+        or []
     )
-    ids = [r["id"] for r in (res.data or [])]
+    ids = []
+    if failed:
+        failed_ids = [v["id"] for v in failed]
+        blocked_cases = (
+            supabase.table("cases")
+            .select("video_id")
+            .in_("video_id", failed_ids)
+            .in_("status", ["finalized", "in_review"])
+            .execute()
+            .data
+            or []
+        )
+        blocked_video_ids = {c["video_id"] for c in blocked_cases}
+        for v in failed:
+            if v["id"] in blocked_video_ids:
+                continue
+            update = {"status": "unprocessed", "error_reason": None, "error_category": None, "claimed_at": None}  # attempts kept: fresh run_id
+            if v.get("local_path"):   # private bucket: the worker's download link may have expired
+                update["blob_url"] = StorageService.signed_download_url(v["local_path"])
+            supabase.table("videos").update(update).eq("id", v["id"]).execute()
+            ids.append(v["id"])
     write_audit(current_user, "queue.retry_failed", "system", "videos",
                 before={"failed": len(ids)}, after={"requeued_ids": ids})
     return {"success": True, "data": {"count": len(ids)}}

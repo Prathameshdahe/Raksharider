@@ -127,18 +127,28 @@ Verdict vocabulary per vehicle and violation: `confirmed | needs_review | observ
 ## Tests
 
 ```bat
-cd "new ai pipeline" && python -m pytest tests -q          # 115 tests, ~2 s
-cd backend && venv\Scripts\python -m pytest app\tests -q   # 23 tests
+cd "new ai pipeline" && python -m pytest tests -q          # 136 tests, ~9 s
+cd backend && venv\Scripts\python -m pytest app\tests -q   # 53 tests
+node --test frontend/tests/                                # payload-shape checks on app.js
 ```
 
 `tests/test_attribution.py` is the golden test: two motorcycles, one helmetless rider → exactly one flagged track.
 
 ## Deployment
 
-- **Frontend** → Vercel (static). Set `RENDER_URL` in `frontend/app.js` if the backend URL changes.
-- **Backend** → Render, start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`; env vars above.
-  Replace the `"*"` CORS entry in `app/main.py` with the exact Vercel origin before going public.
-- **Worker** → laptop with GPU, or `docker compose up` in `new ai pipeline/` (CPU image).
+Current state, owner checklist and verification steps: **[docs/DEPLOYMENT_STATUS.md](docs/DEPLOYMENT_STATUS.md)**.
+
+- **Frontend** → Vercel (static, auto-deploys on push). `RENDER_URL` in `frontend/app.js` is the backend; localhost uses `:8000`.
+- **Backend** → Render free tier from the root `render.yaml` (Python 3.11.9, `uvicorn app.main:app`). Secrets go in the Environment tab:
+  `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_EVIDENCE_CONTAINER`. CORS allows
+  `raksharider.vercel.app` + its previews; add a custom domain with `CORS_EXTRA_ORIGINS`.
+- **Never sleeps.** The backend pings its own `/health?deep=1` every 10 min (keeps Render up *and* counts as Supabase activity so
+  the free project is never paused) and runs `check_idle_alerts()`; `.github/workflows/keepalive.yml` pings from outside as well.
+  The frontend retries GETs during a cold start instead of erroring.
+- **Database** → run `backend/database/*.sql` in order (002 → 007) in the Supabase SQL editor; 007 is idempotent and carries the
+  current `decide_finding`.
+- **Worker** → laptop with GPU (`new ai pipeline/start.bat`), or the CPU Docker image on a Hugging Face Space / any container
+  host — see `new ai pipeline/DEPLOY.md`. `GET /status` on the backend shows whether a worker is alive.
 
 ## Known gaps / next
 

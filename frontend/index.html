@@ -192,28 +192,127 @@ body:has(#app.active) #cursor-grid,body:has(#app.active) #landing{display:none !
 #login-back{position:fixed;top:14px;left:14px;z-index:4;background:none;border:1px solid rgba(251,250,247,.18);color:rgba(251,250,247,.7);border-radius:10px;padding:8px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;cursor:pointer}
 #login-back:hover{color:var(--warm);border-color:var(--warm)}
 
-/* ── Public landing ──────────────────────────────────────── */
-#landing{display:none;min-height:100vh;background:var(--warm);position:relative;z-index:1}
+/* ── Public landing (v5: editorial layout — top bar · hero + art · stats bar · sections · footer) ── */
+#landing{display:none;min-height:100vh;background:#fff;position:relative;z-index:1;color:var(--navy)}
 #landing.active{display:block;animation:fadeUp .35s ease-out both}
-.land-head{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;background:rgba(251,250,247,.86);backdrop-filter:blur(18px);border-bottom:1px solid var(--navy12)}
-.land-head .brand{display:flex;align-items:center;gap:8px;font-family:'Archivo',sans-serif;font-weight:800;font-size:15px}
-.land-head .cta-row{margin:0;gap:8px}
-.land-head .btn-primary,.land-head .btn-outline{padding:9px 14px;font-size:13px}
-.land-main{max-width:1040px;margin:0 auto;padding:0 16px 48px}
-.land-hero{padding:40px 0 8px}
-.land-hero .hero-h1{max-width:20ch}
-.land-hero .hero-body{font-size:16px}
-.land-steps{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:8px}
-.land-step{border-radius:var(--r);padding:18px;background:rgba(251,250,247,.7);border:1px solid var(--navy12)}
-.land-step .n{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.4px;color:var(--signal);margin-bottom:8px}
-.land-step h3{font-family:'Archivo',sans-serif;font-size:17px;letter-spacing:-.3px;margin-bottom:6px}
-.land-step p{font-size:13px;line-height:1.6;color:var(--navy72)}
-.land-note{border-radius:var(--r);padding:18px 20px;background:var(--navy);color:rgba(251,250,247,.82);font-size:13.5px;line-height:1.65;margin-top:8px}
-.land-note b{color:var(--warm)}
-.land-note a{color:#ff8a70}
-.land-foot{padding:24px 0 0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;color:var(--navy40)}
+.ld-head{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;background:rgba(255,255,255,.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-bottom:1px solid var(--navy12)}
+.ld-brand{display:flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:14px;letter-spacing:-.2px;color:var(--navy);background:none;border:0;padding:0;cursor:pointer}
+.ld-brand .sl{color:var(--navy40)}
+.ld-nav{display:none;gap:22px}
+.ld-nav a{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--navy);padding:6px 0;border-bottom:1.5px solid transparent;transition:border-color var(--transition)}
+.ld-nav a:hover{border-color:var(--signal)}
+.ld-head-cta{display:flex;align-items:center;gap:8px}
+.ld-link-btn{display:none;background:none;border:0;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--navy72);padding:8px 10px}
+.ld-link-btn:hover{color:var(--navy)}
+.ld-pill{display:inline-flex;align-items:center;gap:8px;background:var(--navy);color:#fff;border:1.5px solid var(--navy);border-radius:999px;padding:11px 20px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase;transition:background var(--transition),transform var(--transition);white-space:nowrap}
+.ld-pill:hover{background:#272b36;transform:translateY(-1px)}
+.ld-pill .ar{font-size:13px;line-height:1}
+.ld-pill-lg{padding:15px 26px;font-size:12px}
+.ld-main{max-width:1180px;margin:0 auto;padding:0 16px}
+.ld-hero{display:grid;grid-template-columns:1fr;gap:28px;padding:34px 0 26px;border-bottom:1px solid var(--navy12)}
+.ld-hero-copy{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.ld-mark{width:34px;height:34px;color:var(--navy);margin-bottom:18px}
+.ld-mark svg{width:100%;height:100%;display:block}
+.ld-h1{font-family:'Archivo',sans-serif;font-weight:600;font-size:clamp(38px,7.2vw,76px);line-height:.98;letter-spacing:-2.2px;margin:0 0 20px;text-wrap:balance}
+.ld-lead{font-size:16px;line-height:1.6;color:var(--navy72);max-width:48ch;margin:0 0 26px}
+.ld-cta{display:flex;flex-wrap:wrap;align-items:center;gap:18px;margin-bottom:28px}
+.ld-play{display:inline-flex;align-items:center;gap:12px;color:var(--navy);font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase}
+.ld-play-ic{width:44px;height:44px;border-radius:50%;background:var(--navy);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 0 0 4px #fff,0 0 0 5px var(--navy12);transition:transform var(--transition)}
+.ld-play:hover .ld-play-ic{transform:scale(1.06)}
+.ld-note{font-size:13.5px;line-height:1.5;color:var(--navy72);max-width:44ch;margin:0;padding-left:16px;position:relative}
+.ld-ast{position:absolute;left:0;top:-1px;color:var(--signal);font-weight:700;font-size:16px}
+.ld-hero-art{position:relative;min-height:330px;border-radius:var(--r);overflow:hidden;background:#fff}
+.ld-art-svg{position:absolute;inset:0;width:100%;height:100%}
+.ld-art-frame{position:absolute;left:6%;right:6%;bottom:6%;border-radius:14px;overflow:hidden;border:1px solid var(--navy18);background:var(--navy);box-shadow:0 24px 60px rgba(18,21,28,.22);aspect-ratio:16/9}
+.ld-art-frame img{width:100%;height:100%;object-fit:cover;object-position:center 60%;display:block}
+.ld-art-chip{position:absolute;padding:6px 10px;border-radius:999px;background:#fff;color:var(--navy);border:1px solid var(--navy18);font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.6px;box-shadow:0 8px 24px rgba(18,21,28,.12);white-space:nowrap}
+.ld-art-chip.red{background:var(--signal);color:#fff;border-color:var(--signal)}
+.ld-art-chip.navy{background:var(--navy);color:#fff;border-color:var(--navy)}
+@keyframes ldFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.ld-art-chip{animation:ldFloat 5s ease-in-out infinite}
+.ld-art-chip:nth-child(3){animation-delay:-1.6s}.ld-art-chip:nth-child(4){animation-delay:-3.2s}
+/* stats bar — the "bottom section" of the hero */
+.ld-stats{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--navy12);border-top:0;background:#fff}
+.ld-stat{padding:20px 18px;border-top:1px solid var(--navy12);border-right:1px solid var(--navy12);min-width:0}
+.ld-stat:nth-child(2n){border-right:0}
+.ld-stat-num{font-family:'Archivo',sans-serif;font-weight:600;font-size:clamp(24px,4vw,30px);letter-spacing:-1.2px;line-height:1.05;font-variant-numeric:tabular-nums}
+.ld-stat-num small{font-size:14px;letter-spacing:0;color:var(--navy60);margin-left:2px}
+.ld-stat-lbl{font-size:13px;color:var(--navy72);margin-top:4px;line-height:1.4}
+.ld-stat-live{display:flex;flex-direction:column;gap:8px;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.4px;color:var(--navy72)}
+.ld-stat-live b{color:var(--navy);font-weight:600}
+.ld-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--navy18);margin-right:7px;vertical-align:middle;transition:background .3s}
+.ld-dot.ok{background:var(--green);box-shadow:0 0 0 3px rgba(46,139,87,.18)}
+.ld-dot.bad{background:var(--signal);box-shadow:0 0 0 3px rgba(255,74,38,.18)}
+.ld-dot.wait{background:var(--amber);animation:pulse 1.4s ease-in-out infinite}
+.ld-stat-logos{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--navy40)}
+.ld-stat-logos b{font-family:'Archivo',sans-serif;font-weight:700;font-size:15px;letter-spacing:-.4px;text-transform:none;color:var(--navy)}
+/* sections */
+.ld-section{padding:56px 0 8px;scroll-margin-top:72px}
+.ld-kicker{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.8px;text-transform:uppercase;color:var(--signal);margin-bottom:10px}
+.ld-h2{font-family:'Archivo',sans-serif;font-weight:600;font-size:clamp(26px,4.4vw,40px);letter-spacing:-1.2px;line-height:1.06;margin:0 0 10px;text-wrap:balance}
+.ld-sub{font-size:15px;color:var(--navy60);line-height:1.55;max-width:60ch;margin:0 0 22px}
+.ld-steps{display:grid;gap:0;grid-template-columns:1fr;border:1px solid var(--navy12);border-radius:var(--r);overflow:hidden}
+.ld-step{padding:22px 20px;background:#fff;border-bottom:1px solid var(--navy12);display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start}
+.ld-step:last-child{border-bottom:0}
+.ld-step .n{font-family:'Archivo',sans-serif;font-weight:600;font-size:34px;letter-spacing:-1.5px;line-height:1;color:var(--navy18)}
+.ld-step .who{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:var(--signal);margin-bottom:6px}
+.ld-step h3{font-family:'Archivo',sans-serif;font-weight:600;font-size:19px;letter-spacing:-.4px;margin:0 0 6px}
+.ld-step p{font-size:13.5px;line-height:1.6;color:var(--navy72);margin:0}
+.ld-split{display:grid;grid-template-columns:1fr;gap:18px;align-items:start}
+.ld-card{border:1px solid var(--navy12);border-radius:var(--r);padding:22px;background:#fff}
+.ld-card h3{font-family:'Archivo',sans-serif;font-weight:600;font-size:18px;letter-spacing:-.4px;margin:0 0 8px}
+.ld-card p,.ld-card li{font-size:13.5px;line-height:1.6;color:var(--navy72)}
+.ld-card ul{padding-left:18px;margin:8px 0 0}
+.ld-card.dark{background:var(--navy);color:#fff;border-color:var(--navy)}
+.ld-card.dark h3{color:#fff}.ld-card.dark p,.ld-card.dark li{color:rgba(251,250,247,.8)}
+.ld-roles{display:grid;grid-template-columns:1fr;gap:12px;margin-top:4px}
+.ld-role{border:1px solid var(--navy12);border-radius:14px;padding:16px;background:#fff}
+.ld-role .chip{margin-bottom:8px}
+.ld-role h4{font-family:'Archivo',sans-serif;font-weight:600;font-size:16px;letter-spacing:-.3px;margin:0 0 6px}
+.ld-role p{font-size:13px;line-height:1.55;color:var(--navy72);margin:0}
+.ld-cta-band{margin:56px 0 0;border-radius:var(--r);background:var(--navy);color:#fff;padding:34px 22px;display:flex;flex-direction:column;gap:14px;align-items:flex-start}
+.ld-cta-band h2{font-family:'Archivo',sans-serif;font-weight:600;font-size:clamp(24px,4vw,36px);letter-spacing:-1px;line-height:1.08;margin:0}
+.ld-cta-band p{color:rgba(251,250,247,.72);font-size:14px;max-width:52ch;margin:0}
+.ld-cta-band .ld-pill{background:#fff;color:var(--navy);border-color:#fff}
+.ld-cta-band .ld-pill:hover{background:var(--warm)}
+.ld-cta-band .ld-link-btn{display:inline-block;color:rgba(251,250,247,.8)}
+/* footer */
+.ld-foot{margin-top:56px;border-top:1px solid var(--navy12);background:var(--warm)}
+.ld-foot-in{max-width:1180px;margin:0 auto;padding:40px 16px 22px;display:grid;grid-template-columns:1fr;gap:28px}
+.ld-foot-brand p{font-size:13px;line-height:1.6;color:var(--navy72);max-width:38ch;margin:10px 0 0}
+.ld-foot-cols{display:grid;grid-template-columns:repeat(2,1fr);gap:22px 16px}
+.ld-foot h5{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1.8px;text-transform:uppercase;color:var(--navy40);margin:0 0 10px}
+.ld-foot ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:7px}
+.ld-foot li a,.ld-foot li button{font-size:13.5px;color:var(--navy);background:none;border:0;padding:0;font-family:inherit;cursor:pointer;text-align:left}
+.ld-foot li a:hover,.ld-foot li button:hover{color:var(--signal)}
+.ld-foot-bottom{max-width:1180px;margin:0 auto;padding:16px 16px 22px;border-top:1px solid var(--navy12);display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--navy40)}
+.ld-foot-bottom .ld-dot{margin-right:6px}
 .plate-mask{position:absolute;background:rgba(18,21,28,.55);backdrop-filter:blur(6px);border:1px dashed rgba(251,250,247,.6);border-radius:3px}
-@media(min-width:768px){.land-hero{padding:64px 0 16px}.land-main{padding:0 24px 64px}}
+@media(min-width:640px){
+  .ld-stats{grid-template-columns:repeat(3,1fr)}
+  .ld-stat:nth-child(2n){border-right:1px solid var(--navy12)}
+  .ld-stat:nth-child(3n){border-right:0}
+  .ld-roles{grid-template-columns:repeat(3,1fr)}
+  .ld-foot-cols{grid-template-columns:repeat(3,1fr)}
+}
+@media(min-width:900px){
+  .ld-nav{display:flex}.ld-link-btn{display:inline-block}
+  .ld-head{padding:14px 28px}
+  .ld-main{padding:0 28px}
+  .ld-hero{grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:40px;padding:56px 0 40px}
+  .ld-hero-art{min-height:460px}
+  .ld-stats{grid-template-columns:1.1fr 1fr 1fr 1.3fr 1.2fr}
+  .ld-stat,.ld-stat:nth-child(2n),.ld-stat:nth-child(3n){border-right:1px solid var(--navy12);border-top:0}
+  .ld-stat:last-child{border-right:0}
+  .ld-steps{grid-template-columns:repeat(3,1fr)}
+  .ld-step{border-bottom:0;border-right:1px solid var(--navy12);grid-template-columns:1fr;gap:10px;padding:26px 22px}
+  .ld-step:last-child{border-right:0}
+  .ld-split{grid-template-columns:1.3fr .9fr}
+  .ld-cta-band{flex-direction:row;align-items:center;justify-content:space-between;padding:40px 36px}
+  .ld-foot-in{grid-template-columns:1.2fr 2fr;padding:48px 28px 26px}
+  .ld-foot-cols{grid-template-columns:repeat(4,1fr)}
+  .ld-foot-bottom{padding:16px 28px 26px}
+}
 
 /* ── v4 bits: forms, evidence scrubber, quality bars ─────── */
 .hint{font-size:11.5px;color:var(--navy60);margin-top:5px;line-height:1.45}
@@ -901,6 +1000,22 @@ tr.muted td{opacity:.55}
 }
 .nav-badge[hidden]{display:none}
 
+/* system strip + journey (portal dashboards) */
+.sys-strip{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;padding:10px 14px;margin:0 0 14px;border:1px solid var(--navy12);border-radius:var(--r12);background:rgba(251,250,247,.72);font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.3px;color:var(--navy60)}
+.sys-strip b{color:var(--navy);font-weight:600}
+.sys-strip-tot{margin-left:auto}
+.journey{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;align-items:start;margin-top:6px}
+.journey-step{position:relative;text-align:center;padding:10px 4px 6px;border-radius:12px;background:rgba(18,21,28,.035)}
+.journey-step.has{background:var(--signal10)}
+.journey-num{font-family:'Archivo',sans-serif;font-weight:800;font-size:22px;letter-spacing:-.8px;line-height:1}
+.journey-step.has .journey-num{color:var(--signal)}
+.journey-label{font-size:10.5px;color:var(--navy60);margin-top:4px;line-height:1.2}
+.journey-arrow{position:absolute;right:-9px;top:12px;font-size:12px;color:var(--navy40);z-index:1}
+@media(max-width:480px){.journey-label{font-size:9.5px}.journey-arrow{display:none}}
+#app-foot{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;justify-content:space-between;padding:14px 16px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--navy12);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--navy40)}
+#app-foot .ld-dot{margin-right:6px}
+@media(min-width:1024px){#app-foot{padding:14px 32px}}
+
 /* tiles */
 .tiles{display:grid;gap:10px;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:22px}
 .tile{border-radius:var(--r12);padding:14px 14px 12px;background:rgba(251,250,247,.7);backdrop-filter:blur(12px);border:1px solid var(--navy12);min-width:0}
@@ -1071,29 +1186,108 @@ tr.muted td{opacity:.55}
 
 <!-- ░░ PUBLIC LANDING (logged-out visitors) ░░ -->
 <div id="landing">
-  <header class="land-head">
-    <div class="brand"><div class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline src="logo.webm"></video></div>ROADWATCH<span style="color:#FF4A26">.AI</span></div>
-    <div class="cta-row"><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button></div>
+  <header class="ld-head">
+    <button class="ld-brand" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})"><span class="sl">//</span><div class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline src="logo.webm"></video></div>RoadWatch<span style="color:#FF4A26">.AI</span></button>
+    <nav class="ld-nav" aria-label="Site">
+      <a href="#how">How it works</a><a href="#sample">Sample</a><a href="#roles">Roles</a><a href="#privacy">Privacy</a><a href="#status-bar">Status</a>
+    </nav>
+    <div class="ld-head-cta">
+      <button class="ld-link-btn" type="button" onclick="openLogin('signup')">Create account</button>
+      <button class="ld-pill" type="button" onclick="openLogin('signin')">Log in <span class="ar">↗</span></button>
+    </div>
   </header>
-  <main class="land-main">
-    <section class="land-hero">
-      <h1 class="hero-h1">Saw dangerous driving? Send the clip. A person decides.</h1>
-      <p class="hero-body">RoadWatch checks dashcam and phone footage for unsafe behaviour on Indian roads.<br>The AI reads every frame and writes a report; a trained reviewer confirms or rejects every finding.<br>Nothing is ever fined here — confirmed cases go to the traffic authority, who decide what happens next.</p>
-      <div class="cta-row"><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button></div>
-    </section>
 
-    <section class="section" style="padding-top:8px">
-      <h2 class="section-title" style="font-size:clamp(20px,5vw,26px)">How a clip is handled</h2>
-      <div class="land-steps">
-        <div class="land-step"><div class="n">01 · YOU</div><h3>Upload and describe</h3><p>Pick two-wheeler or four-wheeler, say what you saw, add the plate if you read it. Your file goes straight to private storage.</p></div>
-        <div class="land-step"><div class="n">02 · AI FIRST</div><h3>Every frame, every vehicle</h3><p>The pipeline tracks each vehicle, reads plates twice, and answers your claim: supported, not supported, or cannot tell. Serious reports go first.</p></div>
-        <div class="land-step"><div class="n">03 · HUMAN ALWAYS DECIDES</div><h3>A reviewer rules on each finding</h3><p>Confirmed, rejected with a reason, or inconclusive. You see every decision on your submission. Nothing counts until a person says so.</p></div>
+  <main class="ld-main">
+    <!-- Hero -->
+    <section class="ld-hero" id="top">
+      <div class="ld-hero-copy">
+        <div class="ld-mark" aria-hidden="true"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M17 2c1.2 7.6 7.4 13.8 15 15-7.6 1.2-13.8 7.4-15 15-1.2-7.6-7.4-13.8-15-15C9.6 15.8 15.8 9.6 17 2z"/></svg></div>
+        <h1 class="ld-h1">Saw dangerous driving?<br>Send the clip.<br>A person decides.</h1>
+        <p class="ld-lead">RoadWatch checks dashcam and phone footage for unsafe behaviour on Indian roads. The AI reads every frame and writes a report; a trained reviewer confirms or rejects every finding.</p>
+        <div class="ld-cta">
+          <button class="ld-pill ld-pill-lg" type="button" onclick="openLogin('signup')">Create account</button>
+          <a class="ld-play" href="#sample"><span class="ld-play-ic">▶</span>See a sample analysis</a>
+        </div>
+        <p class="ld-note"><span class="ld-ast">*</span>Nothing is fined here. Confirmed cases go to the traffic authority, who decide what happens next.</p>
+      </div>
+
+      <div class="ld-hero-art" aria-hidden="true">
+        <svg class="ld-art-svg" viewBox="0 0 520 520" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="ldgrid" width="26" height="26" patternUnits="userSpaceOnUse"><path d="M26 0H0V26" fill="none" stroke="#12151C" stroke-opacity=".07"/></pattern>
+            <filter id="ldgrain"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .18 0"/></filter>
+          </defs>
+          <rect width="520" height="520" fill="url(#ldgrid)"/>
+          <!-- light-blue "pipeline" blob + cogs -->
+          <path d="M470 40c40 30 70 90 44 150-20 48-60 60-50 110 8 42-20 70-64 62" fill="none" stroke="#CFE0E8" stroke-width="54" stroke-linecap="round"/>
+          <g fill="#CFE0E8">
+            <circle cx="430" cy="430" r="26"/><circle cx="478" cy="462" r="20"/><circle cx="452" cy="492" r="14"/>
+          </g>
+          <!-- track graph: four vehicle nodes joined by the tracker -->
+          <g stroke="#12151C" stroke-width="1.6" fill="none">
+            <path d="M80 120 Q180 60 300 118"/><path d="M80 120 Q110 220 196 236"/><path d="M196 236 Q260 170 300 118"/><path d="M300 118 Q330 190 370 220"/>
+            <path d="M30 170 Q180 290 360 265" stroke-dasharray="4 6" stroke-opacity=".5"/>
+          </g>
+          <g fill="#12151C">
+            <rect x="52" y="92" width="56" height="56" rx="12" transform="rotate(-8 80 120)"/>
+            <rect x="272" y="90" width="56" height="56" rx="12" transform="rotate(10 300 118)"/>
+            <rect x="168" y="208" width="56" height="56" rx="12" transform="rotate(-12 196 236)"/>
+            <rect x="344" y="194" width="52" height="52" rx="12" transform="rotate(6 370 220)"/>
+          </g>
+          <!-- the finding: a warning triangle -->
+          <path d="M182 92 L246 118 L204 166 Z" fill="#FF4A26"/>
+          <path d="M182 92 L246 118 L204 166 Z" fill="#000" filter="url(#ldgrain)" opacity=".35"/>
+          <!-- the human decision: a big toggle -->
+          <rect x="60" y="282" width="300" height="118" rx="59" fill="#7FAFC2"/>
+          <rect x="60" y="282" width="300" height="118" rx="59" fill="#000" filter="url(#ldgrain)" opacity=".16"/>
+          <circle cx="294" cy="341" r="40" fill="#fff"/><circle cx="294" cy="341" r="46" fill="none" stroke="#12151C" stroke-opacity=".12" stroke-width="2"/>
+          <!-- red road sweep -->
+          <path d="M-20 470 C90 400 160 520 300 455 S470 470 540 420 L540 540 L-20 540Z" fill="#FF4A26" opacity=".92"/>
+        </svg>
+        <span class="ld-art-chip navy" style="left:8%;top:9%">track #7 · motorcycle · 61 frames</span>
+        <span class="ld-art-chip red" style="right:7%;top:30%">finding · no helmet · tier A</span>
+        <span class="ld-art-chip" style="left:12%;top:52%">reviewer decision · pending</span>
+        <div class="ld-art-frame">
+          <img src="assets/sample-frame.jpg" width="960" height="843" alt="">
+          <div class="detection-overlay">
+            <div class="det-box" style="left:10%;top:28%;width:78%;height:66%"><span class="det-label">Vehicle #1 · car · 89%</span></div>
+            <div class="det-box-white" style="left:24.4%;top:60%;width:16.6%;height:8%"><span class="det-label-white">plate · masked</span></div>
+            <div class="scan-line"></div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section class="section">
-      <h2 class="section-title" style="font-size:clamp(20px,5vw,26px)">One sample analysis</h2>
-      <p class="section-sub" style="margin-bottom:14px">A frame from a recorded run. Plates in this sample are masked and the labels below are fictional.</p>
+    <!-- Stats bar: live numbers from GET /status (falls back to — while the free-tier backend wakes) -->
+    <section class="ld-stats" id="status-bar" aria-label="Platform status">
+      <div class="ld-stat"><div class="ld-stat-num" data-stat="clips_analysed">—</div><div class="ld-stat-lbl">clips analysed by the AI</div></div>
+      <div class="ld-stat"><div class="ld-stat-num" data-stat="cases_decided">—</div><div class="ld-stat-lbl">cases decided by a human</div></div>
+      <div class="ld-stat"><div class="ld-stat-num" data-stat="findings_confirmed">—</div><div class="ld-stat-lbl">findings confirmed on evidence</div></div>
+      <div class="ld-stat ld-stat-live">
+        <div><span class="ld-dot wait" data-dot="backend"></span><b>API</b> <span data-stat-text="backend">checking…</span></div>
+        <div><span class="ld-dot wait" data-dot="worker"></span><b>AI worker</b> <span data-stat-text="worker">checking…</span></div>
+        <div><span class="ld-dot wait" data-dot="queue"></span><b>Queue</b> <span data-stat-text="queue">…</span></div>
+      </div>
+      <div class="ld-stat ld-stat-logos">Built on <b>YOLO</b><b>Supabase</b><b>Render</b><b>Vercel</b></div>
+    </section>
+
+    <!-- How it works -->
+    <section class="ld-section" id="how">
+      <div class="ld-kicker">How a clip is handled</div>
+      <h2 class="ld-h2">Three steps. The person in the middle is always a person.</h2>
+      <p class="ld-sub">Serious reports go first. Accuracy beats speed: a clip can take minutes, and every finding is tied to exactly one vehicle with its own evidence frames.</p>
+      <div class="ld-steps">
+        <div class="ld-step"><div class="n">01</div><div><div class="who">You</div><h3>Upload and describe</h3><p>Pick two-wheeler or four-wheeler, say what you saw, add the plate if you read it. Your file goes straight to private storage over a one-time link.</p></div></div>
+        <div class="ld-step"><div class="n">02</div><div><div class="who">AI first</div><h3>Every frame, every vehicle</h3><p>The pipeline tracks each vehicle, reads plates on the vehicle's own crop, and answers your claim: supported, not supported, or cannot tell.</p></div></div>
+        <div class="ld-step"><div class="n">03</div><div><div class="who">A human always decides</div><h3>A reviewer rules on each finding</h3><p>Confirmed, rejected with a reason, or inconclusive. You see every decision on your submission. Nothing counts until a person says so.</p></div></div>
+      </div>
+    </section>
+
+    <!-- Sample analysis -->
+    <section class="ld-section" id="sample">
+      <div class="ld-kicker">One sample analysis</div>
+      <h2 class="ld-h2">What a reviewer sees.</h2>
+      <p class="ld-sub">A frame from a recorded run. Plates in this sample are masked and the labels below are fictional.</p>
       <div class="demo-frame-wrap">
         <img src="assets/sample-frame.jpg" width="960" height="843" alt="Sample road frame with the number plates masked">
         <div class="detection-overlay">
@@ -1116,12 +1310,67 @@ tr.muted td{opacity:.55}
       </div>
     </section>
 
-    <section class="section">
-      <div class="land-note"><b>Privacy.</b> Uploaders see only the plate they typed; every other vehicle is "Vehicle #2, #3" with no plate. Evidence lives in private storage and opens only through short-lived links. Reviewer names and notes are never shown to uploaders. Rejected findings are kept as unconfirmed observations, never as penalties. RoadWatch never issues or collects a fine.</div>
-      <div class="cta-row" style="margin-top:18px"><button class="btn-primary" type="button" onclick="openLogin('signup')">Create account</button><button class="btn-outline" type="button" onclick="openLogin('signin')">Sign in</button></div>
-      <div class="land-foot">AI RECOMMENDS · HUMANS DECIDE · AUTHORITIES ENFORCE</div>
+    <!-- Roles -->
+    <section class="ld-section" id="roles">
+      <div class="ld-kicker">Who does what</div>
+      <h2 class="ld-h2">Three roles, one rule: the AI never decides.</h2>
+      <p class="ld-sub">Roles are assigned by an admin and checked on every request by the backend. Reviewer access is granted only after a badge check.</p>
+      <div class="ld-roles">
+        <div class="ld-role"><span class="chip chip-grey">Citizen</span><h4>Reports</h4><p>Uploads clips (10 a day, 200 MB each), follows each one in plain words, sees only the plate they typed, and can withdraw before a reviewer starts.</p></div>
+        <div class="ld-role"><span class="chip chip-amber">Reviewer</span><h4>Decides</h4><p>Claims a case from the queue, inspects the evidence per finding, corrects the plate or vehicle type, and confirms, rejects with a reason, or marks inconclusive.</p></div>
+        <div class="ld-role"><span class="chip chip-red">Admin</span><h4>Runs the system</h4><p>Watches the live board and the AI worker, pauses intake, requeues failures, approves reviewers, reopens or reassigns cases, approves escalation packages, reads the audit log.</p></div>
+      </div>
+    </section>
+
+    <!-- Privacy -->
+    <section class="ld-section" id="privacy">
+      <div class="ld-split">
+        <div>
+          <div class="ld-kicker">Privacy and fairness</div>
+          <h2 class="ld-h2">Built so a typo never convicts the wrong owner.</h2>
+          <p class="ld-sub">Uploaders see only the plate they typed; every other vehicle is "Vehicle #2, #3" with no plate. Evidence lives in private storage and opens only through short-lived signed links. Reviewer names and notes are never shown to uploaders.</p>
+          <div class="ld-card">
+            <h3>What is kept, and what is not</h3>
+            <ul>
+              <li>Rejected findings stay on record as <b>unconfirmed observations</b>, never as penalties.</li>
+              <li>A finding cannot be confirmed with <b>zero evidence frames</b>.</li>
+              <li>Every reviewer and admin action is written to an <b>append-only audit log</b>.</li>
+              <li>RoadWatch never issues or collects a fine.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="ld-card dark">
+          <h3>AI recommends. Humans decide. Authorities enforce.</h3>
+          <p>The pipeline tracks each vehicle with one tracker per class group, reads plates on the vehicle's own crop so ownership is known by construction, and measures verdicts in time, not frame counts. Everything it reports is provisional until a person says otherwise.</p>
+        </div>
+      </div>
+      <div class="ld-cta-band">
+        <div><h2>Ready to send your first clip?</h2><p>Create an account, describe what you saw, and follow the review from upload to decision.</p></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button class="ld-pill ld-pill-lg" type="button" onclick="openLogin('signup')">Create account</button><button class="ld-link-btn" type="button" onclick="openLogin('signin')">I already have one</button></div>
+      </div>
     </section>
   </main>
+
+  <!-- Footer (the bottom section) -->
+  <footer class="ld-foot">
+    <div class="ld-foot-in">
+      <div class="ld-foot-brand">
+        <div class="ld-brand" style="cursor:default"><span class="sl">//</span>RoadWatch<span style="color:#FF4A26">.AI</span></div>
+        <p>AI-assisted traffic-violation detection from dashcam clips. The AI finds vehicles and attaches every finding to one tracked vehicle with its own evidence; a human reviewer decides before anything counts.</p>
+      </div>
+      <div class="ld-foot-cols">
+        <div><h5>Product</h5><ul><li><a href="#how">How it works</a></li><li><a href="#sample">Sample analysis</a></li><li><a href="#roles">Roles</a></li><li><a href="#status-bar">System status</a></li></ul></div>
+        <div><h5>Account</h5><ul><li><button type="button" onclick="openLogin('signin')">Sign in</button></li><li><button type="button" onclick="openLogin('signup')">Create account</button></li><li><button type="button" onclick="openLogin('signup')">Request reviewer access</button></li></ul></div>
+        <div><h5>Trust</h5><ul><li><a href="#privacy">Privacy</a></li><li><a href="#privacy">Evidence rules</a></li><li><a href="#privacy">Audit log</a></li></ul></div>
+        <div><h5>Project</h5><ul><li><a href="https://github.com/Prathameshdahe/Raksharider" target="_blank" rel="noopener">Source on GitHub</a></li><li><a href="https://raksharider.onrender.com/docs" target="_blank" rel="noopener">API reference</a></li><li><a href="https://raksharider.onrender.com/status" target="_blank" rel="noopener">Status JSON</a></li></ul></div>
+      </div>
+    </div>
+    <div class="ld-foot-bottom">
+      <span>© 2026 RoadWatch.AI · RakshaRide</span>
+      <span><span class="ld-dot wait" data-dot="backend"></span>API <span data-stat-text="backend">checking…</span> · <span class="ld-dot wait" data-dot="worker"></span>worker <span data-stat-text="worker">…</span></span>
+      <span>AI recommends · Humans decide · Authorities enforce</span>
+    </div>
+  </footer>
 </div>
 
 <!-- ░░ LOGIN (lamp + cursor grid + panel) ░░ -->
@@ -1305,6 +1554,11 @@ tr.muted td{opacity:.55}
     </header>
 
     <main id="app-main"><div id="page" class="page active"></div></main>
+    <footer id="app-foot">
+      <span>RoadWatch.AI · <span id="app-foot-version">web</span></span>
+      <span><span class="ld-dot wait" data-dot="backend"></span>API <span data-stat-text="backend">checking…</span> · <span class="ld-dot wait" data-dot="worker"></span>worker <span data-stat-text="worker">…</span></span>
+      <span>AI recommends · Humans decide · Authorities enforce</span>
+    </footer>
   </div>
 
   <!-- Mobile bottom navigation (built by JS per role) -->
@@ -1337,6 +1591,6 @@ tr.muted td{opacity:.55}
 <!-- Toast -->
 <div id="toast"></div>
 
-<script src="app.js?v=4.0"></script>
+<script src="app.js?v=5.0"></script>
 </body>
 </html>

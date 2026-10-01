@@ -156,10 +156,20 @@ class PlateAggregator:
         if crop is None or crop.size == 0:
             return None
 
+        # Keep only a padded region around the plate (streaming runs must not hold
+        # a 4K frame per candidate). plate_bbox is translated into crop coordinates.
+        h_img, w_img = frame_bgr.shape[:2]
+        x1, y1, x2, y2 = plate_bbox
+        pw, ph = max(8.0, x2 - x1), max(8.0, y2 - y1)
+        rx1 = int(max(0, x1 - pw)); ry1 = int(max(0, y1 - ph))
+        rx2 = int(min(w_img, x2 + pw)); ry2 = int(min(h_img, y2 + ph))
+        region = frame_bgr[ry1:ry2, rx1:rx2].copy()
+        local_bbox = [x1 - rx1, y1 - ry1, x2 - rx1, y2 - ry1]
+
         candidate = PlateCandidate(
             track_id=track_id,
-            frame_bgr=frame_bgr.copy(),
-            plate_bbox=list(plate_bbox),
+            frame_bgr=region,
+            plate_bbox=local_bbox,
             timestamp=timestamp,
             frame_index=frame_index,
             detector_confidence=detector_confidence,

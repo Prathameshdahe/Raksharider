@@ -1,30 +1,27 @@
 """
 pipeline/vehicle_state.py
 --------------------------
-The central shared-state object for the track-centric pipeline.
+The single per-vehicle source of truth for the track-centric pipeline.
 
-Each tracked vehicle gets one VehicleState. Per-frame observations
-(from rules.py, heuristics.py, plate_aggregator.py, vehicle_class_aggregator.py)
-accumulate here keyed by track_id. At clip end, each VehicleState
-resolves its observations into a per-violation verdict using:
-  - Evidence count thresholds (minimum N frames to confirm)
-  - Agreement ratio (minimum fraction of frames in agreement)
-  - Confidence-weighted scoring
+Every stage writes *observations* keyed by track_id; nothing is decided per
+frame. At clip end each VehicleState resolves its observations into one
+verdict per violation type.
 
-The registry (VehicleStateRegistry) holds all VehicleState objects and
-is the single source of truth for building the final report.
+Observation values are THREE-state:
+    True   observed positive (violation seen)
+    False  observed negative (checked, violation absent)
+    None   not evaluable this frame (occluded / too small / out of frame)
 
-Architecture note
------------------
-This is the "shared state" layer described in Section 5 of the master
-build spec. It is intentionally separate from:
-  - plate_aggregator.py  (OCR accumulation — feeds observations here)
-  - vehicle_class_aggregator.py (class votes — feeds observations here)
-  - rules.py / heuristics.py  (detection engines — feed observations here)
-  - report.py  (consumes VehicleStateRegistry.export_report())
-
-Only VehicleStateRegistry is imported by run_pipeline.py. Everything
-else is an internal detail of this module.
+Rules that matter:
+  * One observation per (violation, frame). Duplicate entries for the same
+    frame are collapsed before counting — evidence counts distinct frames.
+  * Agreement = positive frames / evaluable frames. Unobservable frames never
+    count against (or for) a vehicle.
+  * Verdict results: confirmed | needs_review | observed_absent | unobservable
+    | not_evaluated (see contract.VERDICT_RESULTS).
+  * VLM observations override rule observations for the frame they examined.
+  * Violations not applicable to the vehicle's wheel class are not_evaluated (policy flags).
+  * review_only violations (wheelie, missing_plate, …) cap at needs_review.
 """
 
 from __future__ import annotations
@@ -34,364 +31,327 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pipeline.contract import (
+    KNOWN_VIOLATIONS,
+    VEHICLE_CLASSES,
+    VIOLATION_POLICY,
+    VehicleRecord,
+    severity_for,
+)
 from pipeline.vehicle_class_gate import is_two_wheeler
 
 logger = logging.getLogger(__name__)
 
 # ── Resolution thresholds ────────────────────────────────────────────────────
-
-# Minimum number of evidence frames to call something "confirmed"
-MIN_EVIDENCE_FRAMES: int = 2
-
-# Minimum fraction of evidence frames that agree to call something "confirmed"
-MIN_AGREEMENT_RATIO: float = 0.55
-
-# ── Violation types the pipeline knows about ─────────────────────────────────
-KNOWN_VIOLATIONS = frozenset({
-    "no_helmet",
-    "triple_riding",
-    "phone_usage",
-    "wheelie",
-    "erratic_driving",
-    "signal_violation",
-    "no_seatbelt",
-    "wrong_way",
-})
+MIN_EVIDENCE_FRAMES: int   = 3      # distinct positive frames needed to confirm ...
+MIN_EVIDENCE_SPAN_S: float = 1.0    # ... spread over at least this much real time (dense 30 fps must not confirm on 0.1 s)
+MIN_AGREEMENT_RATIO: float = 0.55   # positive / evaluable frames needed to confirm
+MIN_ABSENT_FRAMES:   int   = 3      # negatives needed before "observed_absent" (else unobservable)
+MIN_ABSENT_SPAN_S:   float = 1.0
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
 
 @dataclass
 class VehicleObservation:
-    """
-    One per-frame observation about a vehicle, from any source.
-
-    source: which module produced this ('rules', 'heuristics', 'ocr',
-            'vehicle_class', 'vlm')
-    key:    what was observed (violation type OR 'vehicle_class' OR 'plate')
-    value:  the observed value (True/False for violations, str for class/plate)
-    confidence: detection confidence 0.0-1.0
-    """
+    """One per-frame observation about a vehicle, from any source."""
     frame_index: int
     timestamp: float
-    source: str
-    key: str
-    value: Any                   # bool (violation) | str (class/plate)
+    source: str                  # 'rules' | 'heuristics' | 'vlm' | 'detector'
+    key: str                     # violation type | 'present'
+    value: Any                   # True | False | None
     confidence: float = 1.0
 
 
 @dataclass
 class ViolationVerdict:
     """Resolved verdict for one violation type on one vehicle."""
-    violation: str
-    result: str                  # 'confirmed' | 'insufficient_evidence' | 'not_present'
-    evidence_frames: int         # number of frames that observed this
-    agreement: float             # fraction that agreed (positive)
-    confidence: float            # mean confidence of positive observations
-    reasoning: str               # human-readable explanation
+    violation:        str
+    result:           str     # contract.VERDICT_RESULTS
+    evidence_frames:  int     # distinct frames observed positive
+    evaluable_frames: int     # distinct frames observed positive OR negative
+    agreement:        float   # evidence_frames / evaluable_frames
+    confidence:       float   # mean confidence of positive observations
+    reasoning:        str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "result":           self.result,
+            "evidence_frames":  self.evidence_frames,
+            "evaluable_frames": self.evaluable_frames,
+            "agreement":        self.agreement,
+            "confidence":       self.confidence,
+            "reasoning":        self.reasoning,
+        }
+
+
+def _dedup_per_frame(observations: List[VehicleObservation]) -> Dict[int, VehicleObservation]:
+    """
+    Collapse to ONE observation per frame_index.
+    Priority: any VLM observation for that frame wins (it is the tiebreaker);
+    otherwise True > False > None, ties broken by higher confidence.
+    """
+    def rank(o: VehicleObservation) -> tuple:
+        vlm = 1 if o.source == "vlm" else 0
+        val = 2 if o.value is True else (1 if o.value is False else 0)
+        return (vlm, val, o.confidence)
+
+    best: Dict[int, VehicleObservation] = {}
+    for o in observations:
+        cur = best.get(o.frame_index)
+        if cur is None or rank(o) > rank(cur):
+            best[o.frame_index] = o
+    return best
 
 
 @dataclass
 class VehicleState:
-    """
-    Per-vehicle accumulated state and resolved verdicts.
-
-    Created once per track_id. Observations are added via add_observation().
-    Call resolve() at clip end to fill violation_verdicts.
-    """
+    """Per-vehicle accumulated state and resolved verdicts."""
     track_id: int
-    first_seen: float = 0.0
-    last_seen: float = 0.0
-    frames_observed: int = 0
-
-    # Resolved from vehicle_class_aggregator
     vehicle_class: str = "unknown"
     class_confidence: float = 0.0
     class_is_stable: bool = False
 
-    # Resolved from plate_aggregator
     plate_text: Optional[str] = None
     plate_confidence: float = 0.0
     plate_needs_review: bool = False
+    plate_method: str = "none"                # none | ocr | ocr+claim | claim_only
+    raw_plate_reads: List[str] = field(default_factory=list)
+    identity_status: str = "provisional"      # contract.IDENTITY_STATUSES
+    is_subject: bool = False
 
-    # Raw observations accumulated per frame
     observations: List[VehicleObservation] = field(default_factory=list)
+    evidence: List[str] = field(default_factory=list)        # relative evidence file paths
 
-    # Resolved at end of clip
     violation_verdicts: Dict[str, ViolationVerdict] = field(default_factory=dict)
     is_resolved: bool = False
 
+    # ── observations ─────────────────────────────────────────────────────────
     def add_observation(self, obs: VehicleObservation) -> None:
-        """Add one per-frame observation. Thread-safe enough for single-process use."""
         self.observations.append(obs)
+        self.is_resolved = False
 
+    def _presence_frames(self) -> Dict[int, float]:
+        """frame_index -> timestamp for frames the vehicle was seen in."""
+        present = [o for o in self.observations if o.key == "present"]
+        pool = present if present else self.observations
+        return {o.frame_index: o.timestamp for o in pool}
+
+    @property
+    def first_seen(self) -> float:
+        fr = self._presence_frames()
+        return round(min(fr.values()), 3) if fr else 0.0
+
+    @property
+    def last_seen(self) -> float:
+        fr = self._presence_frames()
+        return round(max(fr.values()), 3) if fr else 0.0
+
+    @property
+    def frames_observed(self) -> int:
+        return len(self._presence_frames())
+
+    # ── resolution ───────────────────────────────────────────────────────────
     def resolve(self) -> None:
-        """
-        Resolve all accumulated observations into per-violation verdicts.
-        Call once at clip end (after all frames have been processed).
-        """
         if self.is_resolved:
             return
-
-        # Group observations by key
         by_key: Dict[str, List[VehicleObservation]] = defaultdict(list)
         for obs in self.observations:
             by_key[obs.key].append(obs)
-
         for violation in KNOWN_VIOLATIONS:
-            obs_list = by_key.get(violation, [])
-            self.violation_verdicts[violation] = self._resolve_violation(
-                violation, obs_list
-            )
-
+            self.violation_verdicts[violation] = self._resolve_violation(violation, by_key.get(violation, []))
         self.is_resolved = True
 
-    def _resolve_violation(
-        self,
-        violation: str,
-        observations: List[VehicleObservation],
-    ) -> ViolationVerdict:
-        """
-        Resolve one violation from its observation list.
+    def _resolve_violation(self, violation: str, observations: List[VehicleObservation]) -> ViolationVerdict:
+        policy = VIOLATION_POLICY[violation]
 
-        Evidence-count + agreement-ratio thresholds decide the verdict.
-        VLM observations are weighted 2x (they're more reliable than
-        per-frame YOLO checks).
-        """
+        def verdict(result: str, reasoning: str, n_pos: int = 0, n_eval: int = 0, agreement: float = 0.0, conf: float = 0.0):
+            return ViolationVerdict(violation, result, n_pos, n_eval, round(agreement, 4), round(conf, 4), reasoning)
+
+        if not policy["enabled"]:
+            return verdict("not_evaluated", f"{violation} is disabled by policy.")
+        if self.vehicle_class != "unknown":
+            applicable = policy["two_wheeler"] if is_two_wheeler(self.vehicle_class) else policy["four_wheeler"]
+            if not applicable:
+                return verdict("not_evaluated", f"{violation} is not applicable to '{self.vehicle_class}'.")
         if not observations:
-            return ViolationVerdict(
-                violation=violation,
-                result="not_present",
-                evidence_frames=0,
-                agreement=0.0,
-                confidence=0.0,
-                reasoning=f"No observations for {violation}.",
-            )
+            return verdict("not_evaluated", f"{violation} was never checked for this vehicle.")
 
-        # Guard: two-wheeler only violations must never be confirmed on non-two-wheelers
-        if violation in {"no_helmet", "triple_riding", "wheelie"}:
-            if self.vehicle_class != "unknown" and not is_two_wheeler(self.vehicle_class):
-                return ViolationVerdict(
-                    violation=violation,
-                    result="not_present",
-                    evidence_frames=0,
-                    agreement=0.0,
-                    confidence=0.0,
-                    reasoning=f"Gated: {violation} is not applicable to non-two-wheeler '{self.vehicle_class}'.",
-                )
+        per_frame = _dedup_per_frame(observations)
+        positives = [o for o in per_frame.values() if o.value is True]
+        negatives = [o for o in per_frame.values() if o.value is False]
+        n_pos, n_eval = len(positives), len(positives) + len(negatives)
 
-        # Count positive vs total observations
-        positive = [o for o in observations if bool(o.value) is True]
-        total    = len(observations)
-        n_pos    = len(positive)
-        agreement = n_pos / total if total > 0 else 0.0
+        if n_eval == 0:
+            return verdict("unobservable",
+                           f"{violation} could not be evaluated in any of {len(per_frame)} frame(s) "
+                           f"(occluded / too small / out of frame).")
 
-        # Weighted confidence (VLM observations count double)
-        conf_sum = sum(
-            (o.confidence * 2.0 if o.source == "vlm" else o.confidence)
-            for o in positive
-        )
-        weight_sum = sum(
-            (2.0 if o.source == "vlm" else 1.0)
-            for o in positive
-        )
-        mean_conf = conf_sum / weight_sum if weight_sum > 0 else 0.0
+        agreement = n_pos / n_eval
+        # VLM confirmations weigh double in the confidence mean.
+        w = [(o.confidence, 2.0 if o.source == "vlm" else 1.0) for o in positives]
+        mean_conf = sum(c * k for c, k in w) / sum(k for _, k in w) if w else 0.0
 
-        # Verdict logic
-        if n_pos >= MIN_EVIDENCE_FRAMES and agreement >= MIN_AGREEMENT_RATIO:
-            result = "confirmed"
-            reasoning = (
-                f"Confirmed: {n_pos}/{total} frames positive "
-                f"(agreement {agreement:.0%}, mean_conf {mean_conf:.2f})."
-            )
-        elif n_pos > 0:
-            result = "insufficient_evidence"
-            reasoning = (
-                f"Insufficient evidence: {n_pos}/{total} frames positive "
-                f"(need >= {MIN_EVIDENCE_FRAMES} frames at >= {MIN_AGREEMENT_RATIO:.0%} agreement). "
-                f"Agreement was {agreement:.0%}."
-            )
-        else:
-            result = "not_present"
-            reasoning = f"Not observed in {total} frame(s)."
+        if n_pos == 0:
+            neg_ts = [o.timestamp for o in negatives]
+            if len(negatives) >= MIN_ABSENT_FRAMES and (max(neg_ts) - min(neg_ts)) >= MIN_ABSENT_SPAN_S:
+                return verdict("observed_absent",
+                               f"Checked in {n_eval} frame(s) over {max(neg_ts) - min(neg_ts):.1f}s; {violation} not observed.",
+                               0, n_eval, 0.0, 0.0)
+            return verdict("unobservable",
+                           f"{violation} checked in only {n_eval} frame(s); not enough to say it was absent.",
+                           0, n_eval, 0.0, 0.0)
+        pos_ts = [o.timestamp for o in positives]
+        span_ok = (max(pos_ts) - min(pos_ts)) >= MIN_EVIDENCE_SPAN_S
+        if n_pos >= MIN_EVIDENCE_FRAMES and span_ok and agreement >= MIN_AGREEMENT_RATIO and not policy["review_only"]:
+            return verdict("confirmed",
+                           f"Confirmed: {n_pos}/{n_eval} evaluable frames positive "
+                           f"(agreement {agreement:.0%}, mean_conf {mean_conf:.2f}).",
+                           n_pos, n_eval, agreement, mean_conf)
+        why = ("review-only violation type" if policy["review_only"]
+               else f"need >= {MIN_EVIDENCE_FRAMES} frames over >= {MIN_EVIDENCE_SPAN_S:.0f}s at >= {MIN_AGREEMENT_RATIO:.0%} agreement")
+        return verdict("needs_review",
+                       f"Needs review: {n_pos}/{n_eval} evaluable frames positive "
+                       f"(agreement {agreement:.0%}, mean_conf {mean_conf:.2f}); {why}.",
+                       n_pos, n_eval, agreement, mean_conf)
 
-        return ViolationVerdict(
-            violation=violation,
-            result=result,
-            evidence_frames=n_pos,
-            agreement=round(agreement, 4),
-            confidence=round(mean_conf, 4),
-            reasoning=reasoning,
-        )
-
+    # ── read-outs ────────────────────────────────────────────────────────────
     def confirmed_violations(self) -> List[str]:
-        """Shorthand: list of violation names with result='confirmed'."""
-        return [
-            v for v, vv in self.violation_verdicts.items()
-            if vv.result == "confirmed"
-        ]
+        return [v for v, vv in self.violation_verdicts.items() if vv.result == "confirmed"]
+
+    def review_violations(self) -> List[str]:
+        return [v for v, vv in self.violation_verdicts.items() if vv.result == "needs_review"]
+
+    def flagged_violations(self) -> List[str]:
+        return self.confirmed_violations() + self.review_violations()
+
+    def detection_confidence(self) -> float:
+        confs = [self.violation_verdicts[v].confidence for v in self.flagged_violations()]
+        return round(max(confs), 4) if confs else 0.0
+
+    def positive_frames(self, violation: Optional[str] = None) -> List[VehicleObservation]:
+        """Deduped positive observations (for evidence-frame selection), best first."""
+        keys = [violation] if violation else self.flagged_violations()
+        out: List[VehicleObservation] = []
+        for k in keys:
+            per_frame = _dedup_per_frame([o for o in self.observations if o.key == k])
+            out.extend(o for o in per_frame.values() if o.value is True)
+        # one per frame, highest confidence first
+        best: Dict[int, VehicleObservation] = {}
+        for o in out:
+            if o.frame_index not in best or o.confidence > best[o.frame_index].confidence:
+                best[o.frame_index] = o
+        return sorted(best.values(), key=lambda o: o.confidence, reverse=True)
+
+    def to_record(self) -> VehicleRecord:
+        if not self.is_resolved:
+            self.resolve()
+        confirmed, review = self.confirmed_violations(), self.review_violations()
+        return VehicleRecord(
+            track_id=self.track_id,
+            vehicle_class=self.vehicle_class,
+            class_confidence=round(self.class_confidence, 4),
+            class_stable=self.class_is_stable,
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            frames_observed=self.frames_observed,
+            plate={
+                "text":         self.plate_text,
+                "confidence":   round(self.plate_confidence, 4),
+                "needs_review": self.plate_needs_review,
+                "raw_reads":    list(self.raw_plate_reads),
+                "method":       self.plate_method,
+            },
+            # omit not_evaluated verdicts to keep the record readable
+            verdicts={v: vv.to_dict() for v, vv in self.violation_verdicts.items() if vv.result != "not_evaluated"},
+            confirmed_violations=confirmed,
+            review_violations=review,
+            detection_confidence=self.detection_confidence(),
+            severity=severity_for(confirmed + review),
+            evidence=list(self.evidence),
+            has_violation=bool(confirmed),
+            needs_review=bool(confirmed or review),
+            identity_status=self.identity_status,
+            is_subject=self.is_subject,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialise to a JSON-safe dict for report output."""
-        return {
-            "track_id":         self.track_id,
-            "first_seen":       self.first_seen,
-            "last_seen":        self.last_seen,
-            "frames_observed":  self.frames_observed,
-            "vehicle_class":    self.vehicle_class,
-            "class_confidence": self.class_confidence,
-            "class_stable":     self.class_is_stable,
-            "plate": {
-                "text":         self.plate_text,
-                "confidence":   self.plate_confidence,
-                "needs_review": self.plate_needs_review,
-            },
-            "violations": {
-                v: {
-                    "result":          vv.result,
-                    "evidence_frames": vv.evidence_frames,
-                    "agreement":       vv.agreement,
-                    "confidence":      vv.confidence,
-                    "reasoning":       vv.reasoning,
-                }
-                for v, vv in self.violation_verdicts.items()
-                if vv.result != "not_present"  # omit empty verdicts from output
-            },
-        }
+        return self.to_record().to_dict()
 
 
 class VehicleStateRegistry:
-    """
-    Holds all VehicleState objects for one video run.
-
-    This is the single object passed between pipeline stages. It is
-    created once in run_pipeline.py and referenced by every stage that
-    needs to emit or read per-vehicle state.
-    """
+    """All VehicleState objects for one run. Only vehicle-class tracks live here."""
 
     def __init__(self) -> None:
         self._states: Dict[int, VehicleState] = {}
 
     def get_or_create(self, track_id: int) -> VehicleState:
-        """Return existing VehicleState for track_id, or create a new one."""
         if track_id not in self._states:
             self._states[track_id] = VehicleState(track_id=track_id)
         return self._states[track_id]
 
-    def add_observation(
-        self,
-        track_id: int,
-        *,
-        frame_index: int,
-        timestamp: float,
-        source: str,
-        key: str,
-        value: Any,
-        confidence: float = 1.0,
-    ) -> None:
-        """Add one observation to the given track (creates state if needed)."""
+    def add_observation(self, track_id: int, *, frame_index: int, timestamp: float,
+                        source: str, key: str, value: Any, confidence: float = 1.0) -> None:
         if track_id < 0:
             return
-        state = self.get_or_create(track_id)
-        state.add_observation(VehicleObservation(
-            frame_index=frame_index,
-            timestamp=timestamp,
-            source=source,
-            key=key,
-            value=value,
-            confidence=confidence,
+        self.get_or_create(track_id).add_observation(VehicleObservation(
+            frame_index=frame_index, timestamp=timestamp, source=source,
+            key=key, value=value, confidence=confidence,
         ))
-        # Track first/last seen timestamps
-        if state.frames_observed == 0:
-            state.first_seen = timestamp
-            state.last_seen  = timestamp
-        else:
-            if timestamp < state.first_seen:
-                state.first_seen = timestamp
-            if timestamp > state.last_seen:
-                state.last_seen = timestamp
-        state.frames_observed += 1
 
-    def set_plate(
-        self,
-        track_id: int,
-        plate_text: Optional[str],
-        confidence: float,
-        needs_review: bool = False,
-    ) -> None:
-        """Set resolved plate for a track (called from plate_aggregator result)."""
+    def set_plate(self, track_id: int, plate_text: Optional[str], confidence: float,
+                  needs_review: bool = False, raw_reads: Optional[List[str]] = None,
+                  method: Optional[str] = None) -> None:
         if track_id < 0:
             return
-        state = self.get_or_create(track_id)
-        state.plate_text         = plate_text
-        state.plate_confidence   = confidence
-        state.plate_needs_review = needs_review
+        s = self.get_or_create(track_id)
+        s.plate_text, s.plate_confidence, s.plate_needs_review = plate_text, confidence, needs_review
+        if raw_reads is not None:
+            s.raw_plate_reads = list(raw_reads)
+        s.plate_method = method if method is not None else ("ocr" if plate_text else "none")
 
-    def set_vehicle_class(
-        self,
-        track_id: int,
-        vehicle_class: str,
-        confidence: float = 1.0,
-        is_stable: bool = False,
-    ) -> None:
-        """Set resolved vehicle class for a track (from vehicle_class_aggregator)."""
-        if track_id < 0:
-            return
-        state = self.get_or_create(track_id)
-        state.vehicle_class     = vehicle_class
-        state.class_confidence  = confidence
-        state.class_is_stable   = is_stable
+    def set_vehicle_class(self, track_id: int, vehicle_class: str, confidence: float = 1.0,
+                          is_stable: bool = False) -> bool:
+        """Register a track's class. Person tracks are refused: they are not vehicles."""
+        if track_id < 0 or vehicle_class not in VEHICLE_CLASSES:
+            return False
+        s = self.get_or_create(track_id)
+        s.vehicle_class, s.class_confidence, s.class_is_stable = vehicle_class, confidence, is_stable
+        s.is_resolved = False
+        return True
 
     def merge_tracks(self, primary_id: int, fragment_id: int) -> None:
-        """Merge state from fragment_id into primary_id."""
+        """Merge ALL state of fragment into primary in one operation."""
         if fragment_id == primary_id or fragment_id not in self._states:
             return
         primary = self.get_or_create(primary_id)
         frag = self._states.pop(fragment_id)
         primary.observations.extend(frag.observations)
-        if primary.frames_observed == 0:
-            primary.first_seen = frag.first_seen
-            primary.last_seen = frag.last_seen
-        elif frag.frames_observed > 0:
-            primary.first_seen = min(primary.first_seen, frag.first_seen)
-            primary.last_seen = max(primary.last_seen, frag.last_seen)
-        primary.frames_observed += frag.frames_observed
-        if not primary.plate_text and frag.plate_text:
-            primary.plate_text = frag.plate_text
-            primary.plate_confidence = frag.plate_confidence
-            primary.plate_needs_review = frag.plate_needs_review
+        primary.evidence.extend(frag.evidence)
+        primary.raw_plate_reads.extend(frag.raw_plate_reads)
+        if primary.vehicle_class == "unknown" and frag.vehicle_class != "unknown":
+            primary.vehicle_class, primary.class_confidence, primary.class_is_stable = (
+                frag.vehicle_class, frag.class_confidence, frag.class_is_stable)
+        if frag.plate_text and (not primary.plate_text or frag.plate_confidence > primary.plate_confidence):
+            primary.plate_text, primary.plate_confidence, primary.plate_needs_review, primary.plate_method = (
+                frag.plate_text, frag.plate_confidence, frag.plate_needs_review, frag.plate_method)
+        primary.is_subject = primary.is_subject or frag.is_subject
+        primary.is_resolved = False
 
     def resolve_all(self) -> None:
-        """Resolve all VehicleState objects. Call once at end of clip processing."""
-        for state in self._states.values():
-            state.resolve()
+        for s in self._states.values():
+            s.resolve()
 
     def all_states(self) -> List[VehicleState]:
-        """All VehicleState objects, sorted by track_id."""
         return sorted(self._states.values(), key=lambda s: s.track_id)
 
+    def get(self, track_id: int) -> Optional[VehicleState]:
+        return self._states.get(track_id)
+
     def export_report(self) -> List[Dict[str, Any]]:
-        """
-        Export vehicle-centric report data for report.py.
-
-        Returns a list of vehicle dicts, one per track, with confirmed
-        violations only (insufficient_evidence and not_present are
-        omitted from the vehicles array to keep the report readable —
-        they are still in each VehicleState.violation_verdicts if
-        needed for admin deep-dives).
-        """
-        if not any(s.is_resolved for s in self._states.values()):
-            self.resolve_all()
-
-        vehicles = []
-        for state in self.all_states():
-            confirmed = state.confirmed_violations()
-            vehicles.append({
-                **state.to_dict(),
-                "confirmed_violations": confirmed,
-                "has_violation": bool(confirmed),
-            })
-        return vehicles
+        """Contract-shaped vehicle records (see contract.VehicleRecord)."""
+        self.resolve_all()
+        return [s.to_dict() for s in self.all_states()]
 
     def __len__(self) -> int:
         return len(self._states)

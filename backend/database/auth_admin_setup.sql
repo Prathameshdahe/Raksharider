@@ -61,34 +61,36 @@ CREATE POLICY "Service role full access to profiles"
     USING (true)
     WITH CHECK (true);
 
+-- Profile provisioning on sign-up. Public sign-up ALWAYS creates a citizen: a role named in the
+-- sign-up metadata is only recorded as requested_role for an admin to approve. This body is
+-- identical to the one in 002_rbac_queue_notifications.sql so re-running either file is safe.
+-- The first admin is created with backend/app/scripts/create_admin_user.py, never by e-mail match.
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS requested_role TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS role_requested_at TIMESTAMPTZ;
+
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE wanted TEXT := lower(coalesce(new.raw_user_meta_data->>'role', 'citizen'));
 BEGIN
-    INSERT INTO public.profiles (id, full_name, email, role, badge_number, avatar_url)
+    INSERT INTO public.profiles (id, full_name, email, role, requested_role, role_requested_at, badge_number, avatar_url)
     VALUES (
         new.id,
         COALESCE(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
         lower(new.email),
-        CASE
-            WHEN lower(new.email) = 'prathameshdahe1@gmail.com' THEN 'admin'
-            ELSE COALESCE(new.raw_user_meta_data->>'role', 'citizen')
-        END,
+        'citizen',
+        CASE WHEN wanted IN ('officer', 'admin') THEN wanted ELSE NULL END,
+        CASE WHEN wanted IN ('officer', 'admin') THEN now() ELSE NULL END,
         new.raw_user_meta_data->>'badge_number',
         new.raw_user_meta_data->>'avatar_url'
     )
     ON CONFLICT (id) DO UPDATE SET
-        email = EXCLUDED.email,
-        full_name = COALESCE(EXCLUDED.full_name, public.profiles.full_name),
-        role = CASE
-            WHEN lower(EXCLUDED.email) = 'prathameshdahe1@gmail.com' THEN 'admin'
-            ELSE COALESCE(public.profiles.role, EXCLUDED.role)
-        END,
-        badge_number = COALESCE(EXCLUDED.badge_number, public.profiles.badge_number),
+        email      = EXCLUDED.email,
+        full_name  = COALESCE(EXCLUDED.full_name, public.profiles.full_name),
         avatar_url = COALESCE(EXCLUDED.avatar_url, public.profiles.avatar_url),
         updated_at = now();
     RETURN new;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
@@ -98,13 +100,3 @@ CREATE TRIGGER on_auth_user_created
 GRANT ALL ON TABLE public.profiles TO postgres, service_role;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.profiles TO authenticated;
 GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated;
-
-INSERT INTO public.profiles (id, email, full_name, role)
-SELECT id, lower(email), 'Prathamesh Dahe', 'admin'
-FROM auth.users
-WHERE lower(email) = 'prathameshdahe1@gmail.com'
-ON CONFLICT (id) DO UPDATE SET
-    email = EXCLUDED.email,
-    full_name = EXCLUDED.full_name,
-    role = 'admin',
-    updated_at = now();

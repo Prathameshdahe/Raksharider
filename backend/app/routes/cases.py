@@ -60,7 +60,7 @@ def corrected_plate(corrections: list) -> Optional[str]:
 
 
 def enrich_cases(cases: list) -> list:
-    """List shape: plate {ai, confidence, claimed, corrected}, vehicle_type, findings_count, allegation_answer."""
+    """List shape: plate {ai, confidence, claimed, corrected}, vehicle_class, vehicle_type, findings_count, allegation_answer."""
     if not cases:
         return cases
     ids = [c["id"] for c in cases]
@@ -75,7 +75,9 @@ def enrich_cases(cases: list) -> list:
     for c in cases:
         rec = records.get(c.get("vehicle_record_id"), {})
         vid = videos.get(c["video_id"], {})
-        c["vehicle_type"] = rec.get("vehicle_type")
+        vclass = rec.get("vehicle_type")
+        c["vehicle_class"] = vclass
+        c["vehicle_type"] = "two_wheeler" if vclass in ("motorcycle", "bicycle") else ("four_wheeler" if vclass else None)
         c["plate"] = {
             "ai": rec.get("plate_text"),
             "confidence": rec.get("plate_confidence"),
@@ -167,7 +169,7 @@ def release_case(case_id: str, current_user=Depends(reviewer)):
 # ==============================================================
 @router.get("/cases/{case_id}")
 def case_detail(case_id: str, current_user=Depends(reviewer)):
-    case = enrich_cases([get_case(case_id)])[0]   # same plate / vehicle_type / allegation_answer shape as the list
+    case = enrich_cases([get_case(case_id)])[0]   # same plate / vehicle_class / vehicle_type / allegation_answer shape as the list
     video = _first(supabase.table("videos").select("*").eq("id", case["video_id"]).limit(1).execute().data) or {}
     record = _first(supabase.table("vehicle_records").select("*").eq("id", case.get("vehicle_record_id")).limit(1).execute().data) if case.get("vehicle_record_id") else None
     observations = (supabase.table("plate_observations").select("*").eq("video_id", case["video_id"])

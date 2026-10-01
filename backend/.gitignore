@@ -9,6 +9,7 @@ venv/
 .venv/
 .env
 .env.*
+!.env.example
 
 # VS Code
 .vscode/
@@ -18,6 +19,7 @@ venv/
 
 # Python cache
 .pytest_cache/
+pytest-cache-files-*/
 
 # OS
 .DS_Store

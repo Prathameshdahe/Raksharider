@@ -63,7 +63,7 @@ class FakeSupabase:
         return [(t, m, a) for t, m, a, _ in self.calls if m in ("insert", "update", "upsert", "delete") and (table is None or t == table)]
 
 
-MODULES = ("app.routes.uploads", "app.routes.review", "app.routes.admin", "app.routes.cases", "app.routes.plates",
+MODULES = ("app.routes.uploads", "app.routes.admin", "app.routes.cases", "app.routes.plates",
            "app.routes.evidence", "app.routes.auth", "app.services.video_service", "app.utils.audit")
 
 
@@ -275,6 +275,13 @@ def test_sign_azure_blob_503_without_env(monkeypatch):
         storage_service.sign_azure_blob("v1/r1/a.jpg")
 
 
+def test_sign_azure_blob_without_account_key(monkeypatch):
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "BlobEndpoint=https://test.blob.core.windows.net/;SharedAccessSignature=sv=2020-08-04&ss=b&srt=sco&sp=rwdlacx")
+    with pytest.raises(storage_service.AzureNotConfigured) as exc:
+        storage_service.sign_azure_blob("v1/r1/a.jpg")
+    assert "account key" in str(exc.value)
+
+
 # ── admin ───────────────────────────────────────────────────────────────────
 
 def test_admin_live_shape(client):
@@ -364,3 +371,124 @@ def test_me_returns_portal_and_nav_and_presence(client):
     assert as_role("citizen").get("/auth/me").json()["portal"] == "user"
     assert as_role("citizen").post("/auth/presence").status_code == 200
     assert fake.writes("profiles")[0][2][0].keys() == {"last_seen_at"}
+
+
+def test_retry_failed_filters_error_category_and_checks_cases(client):
+    fake, as_role = client
+    # v1: retryable error, no cases -> should be requeued
+    # v3: retryable error, but has in_review case -> should be skipped by case guard
+    fake.tables["videos"] = [
+        {"id": "v1", "status": "failed", "error_category": "download", "deleted_at": None},
+        {"id": "v3", "status": "failed", "error_category": "persist", "deleted_at": None},
+    ]
+    fake.tables["cases"] = [
+        {"id": "c3", "video_id": "v3", "status": "in_review"}
+    ]
+    r = as_role("admin").post("/admin/queue/retry-failed")
+    assert r.status_code == 200
+    assert r.json()["data"]["count"] == 1
+    assert ("videos", "in_", ("error_category", ["download", "storage", "persist"]), {}) in fake.calls
+    assert ("cases", "in_", ("status", ["finalized", "in_review"]), {}) in fake.calls
+    # Only v1 was updated (v3 was skipped)
+    updates = fake.writes("videos")
+    assert len(updates) == 1
+    assert updates[0][2][0]["status"] == "unprocessed"
+
+
+def test_uploads_today_excludes_uploading_status():
+    from app.services.video_service import VideoService
+    from unittest.mock import MagicMock, patch
+    with patch("app.services.video_service.supabase") as mock_sb:
+        mock_query = MagicMock()
+        mock_sb.table.return_value = mock_query
+        mock_query.select.return_value = mock_query
+        mock_query.eq.return_value = mock_query
+        mock_query.neq.return_value = mock_query
+        mock_query.gte.return_value = mock_query
+        mock_query.is_.return_value = mock_query
+        mock_res = MagicMock(count=2, data=[])
+        mock_query.execute.return_value = mock_res
+        
+        count = VideoService.uploads_today("u1")
+        assert count == 2
+        mock_query.neq.assert_called_with("status", "uploading")
+
+
+def test_write_audit_resilience():
+    from app.utils.audit import write_audit
+    from unittest.mock import MagicMock, patch
+    with patch("app.utils.audit.supabase") as mock_sb:
+        mock_table = MagicMock()
+        mock_sb.table.return_value = mock_table
+        mock_table.insert.side_effect = Exception("DB connection timeout")
+        # Should not raise
+        res = write_audit({"id": "u1", "role": "admin"}, "test.action", "entity", "123")
+        assert res["action"] == "test.action"
+
+
+def test_duplicate_upload_refused_with_409(client, monkeypatch):
+    fake, as_role = client
+    fake.tables["videos"] = [
+        {"id": "v1", "uploaded_by": USER, "status": "uploading", "local_path": "v1.mp4", "deleted_at": None},
+        {"id": "v2", "uploaded_by": OTHER, "status": "processed", "sha256": "abc123hash", "deleted_at": None},
+    ]
+    monkeypatch.setattr(storage_service.StorageService, "object_size", lambda p: 1000)
+    monkeypatch.setattr(storage_service.StorageService, "signed_download_url", lambda p: "https://signed")
+    monkeypatch.setattr(storage_service.StorageService, "compute_sha256", lambda p: "abc123hash")
+
+    # Complete with matching sha256 -> 409
+    r = as_role("citizen").post("/videos/upload/complete", json={"video_id": "v1", "sha256": "abc123hash"})
+    assert r.status_code == 409
+    assert "Duplicate upload" in r.json()["detail"]["error"]
+
+
+def test_sha256_fallback_only_runs_below_size_threshold(client, monkeypatch):
+    """The server-side hash fallback downloads the whole object into RAM. A large clip (no
+    client-supplied sha256) must skip it rather than risk OOM on a 512 MB instance.
+
+    Note: FakeSupabase.execute() ignores query filters and returns the whole table, so it cannot
+    represent "no existing row matches this hash" once the table is non-empty (see
+    test_duplicate_upload_refused_with_409, which passes even for a self-match). That's a
+    pre-existing gap in this fixture, not something to work around here — so this test only
+    asserts what it actually can: whether compute_sha256() ran at all."""
+    fake, as_role = client
+    calls = []
+    monkeypatch.setattr(storage_service.StorageService, "signed_download_url", lambda p: "https://signed")
+    monkeypatch.setattr(storage_service.StorageService, "compute_sha256", lambda p: calls.append(p) or "computed-hash")
+
+    # Small file, no client sha256 -> fallback runs (whatever the fake then does with the result)
+    fake.tables["videos"] = [{"id": "v1", "uploaded_by": USER, "status": "uploading", "local_path": "v1.mp4", "deleted_at": None}]
+    monkeypatch.setattr(storage_service.StorageService, "object_size", lambda p: 4 * 1024 * 1024)
+    as_role("citizen").post("/videos/upload/complete", json={"video_id": "v1"})
+    assert calls == ["v1.mp4"]
+
+    # Large file, no client sha256 -> fallback must NOT run; upload succeeds, unhashed, no duplicate check at all
+    calls.clear()
+    fake.calls.clear()
+    fake.tables["videos"] = [{"id": "v2", "uploaded_by": USER, "status": "uploading", "local_path": "v2.mp4", "deleted_at": None}]
+    monkeypatch.setattr(storage_service.StorageService, "object_size", lambda p: 6 * 1024 * 1024)
+    r = as_role("citizen").post("/videos/upload/complete", json={"video_id": "v2"})
+    assert r.status_code == 200 and calls == []
+    update = next(a[0] for t, m, a, _ in fake.calls if t == "videos" and m == "update")
+    assert "sha256" not in update
+
+
+def test_user_status_intake_paused_and_processing_delayed():
+    from app.routes.uploads import user_status
+    # 1. Unprocessed with worker_paused=True
+    assert user_status({"status": "unprocessed"}, [], worker_paused=True) == "Queued (intake paused)"
+    assert user_status({"status": "unprocessed"}, [], worker_paused=False) == "queued"
+
+    # 2. Processing with retryable error
+    assert user_status({"status": "processing", "error_category": "download"}, []) == "Processing delayed"
+
+    # 3. Processing delayed by time (> 30 min)
+    old_time = "2026-09-17T00:00:00+00:00"
+    assert user_status({"status": "processing", "uploaded_at": old_time}, []) == "Processing delayed"
+
+    # 4. Processing recent with no error
+    from datetime import datetime, timezone
+    recent_time = datetime.now(timezone.utc).isoformat()
+    assert user_status({"status": "processing", "uploaded_at": recent_time}, []) == "analysing"
+
+

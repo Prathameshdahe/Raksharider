@@ -11,8 +11,7 @@ Error shape: `{"detail": {"success": false, "error": "<message>"}}`. Success: `{
 ## 1. Auth (unchanged from v2 except noted)
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| POST | /auth/signup | public | always citizen; `role: "officer"` + `badge_number` → `requested_role`. |
-| POST | /auth/login | public | |
+| — | sign-up / sign-in | browser | supabase-js only, never the backend (a login on the shared service client would rebind it to that user). Sign-up metadata `role: "officer"` + `badge_number` → `requested_role`; the role itself is always citizen. |
 | GET  | /auth/me | any | `{user_id, email, profile, portal: "user"\|"reviewer"\|"admin", nav: [...]}` |
 | PUT  | /auth/profile | any | full_name / phone / avatar_url |
 | POST | /auth/presence | any | heartbeat: sets `profiles.last_seen_at = now()`. Frontend calls every 60 s. Powers "users online". |
@@ -121,3 +120,13 @@ decisions are separate rows.
 - cases.status: `pending_review | in_review | second_opinion | finalized | reopened | withdrawn`.
 - findings.decision: `pending | confirmed | rejected | inconclusive | unverifiable`.
 - plate status (view): `clean | watch | escalated` (observations never move it, docs §2.7 item 27).
+
+## 11. Public status and health (added 1 Oct 2026, backend 3.1.0)
+- `GET /health` — liveness + configuration: `status healthy|misconfigured|degraded`, `version`, `uptime_s`, `missing_env[]`, `azure_evidence_configured`, `keepalive{enabled, running, interval_s, target, last_ping_at, last_ping_ok, last_housekeeping_at, last_error}`.
+  `?deep=1` adds `database{ok, latency_ms|error, cached}` (one `system_settings` read, cached 60 s). Render's health check uses the shallow form; both keep-alive pingers use the deep form so every ping counts as Supabase activity.
+- `GET /status` — **public, no auth, cached 60 s**, aggregates only (HEAD counts, no rows):
+  `{ok, generated_at, database ok|misconfigured|error, worker{online, last_seen, silent_for_s}, intake_paused, queue{depth, processing}, totals{clips_submitted, clips_analysed, cases_opened, cases_decided, findings_confirmed, findings_rejected}, cached}`.
+  `worker.online` = heartbeat within the last 10 min (same window as `check_idle_alerts`). Powers the landing stats bar, the portal status strip and both footers.
+- Keep-alive (`app/services/keepalive.py`): a daemon thread every `KEEPALIVE_INTERVAL_S` (600) GETs `RENDER_EXTERNAL_URL/health?deep=1` and calls `check_idle_alerts()` (24 h idle alert, 48 h auto-release, worker-silent alert — previously never scheduled because pg_cron is off). `KEEPALIVE_ENABLED=0` disables. `.github/workflows/keepalive.yml` is the external second pinger.
+- CORS: `CORS_EXTRA_ORIGINS` (comma-separated) adds origins without a code change; `raksharider.vercel.app` + previews stay hardcoded.
+- Frontend behaviour on a cold Render instance: idempotent GETs retry with backoff (3 s → 15 s, four tries) and show one "waking up the server" toast; non-GET calls surface "The server is starting up — try again in a moment." (`fetchWithWake` in `frontend/app.js`).

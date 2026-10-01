@@ -48,12 +48,16 @@ WHEELIE_MIN_FRAMES: int = 4                  # must persist for >= 4 consecutive
 # Phone usage
 PHONE_PERSON_IOU_THRESHOLD: float = 0.05    # very loose — phone is small
 
-# Erratic driving
-ERRATIC_WINDOW_FRAMES:    int   = 8         # sliding window size
-ERRATIC_MIN_STEP_PX:      float = 12.0      # ignore tiny detector jitter (raised from 8)
-ERRATIC_MIN_LATERAL_RANGE_PX: float = 220.0 # must genuinely weave across frame (raised from 150)
-ERRATIC_MIN_PATH_PX:      float = 600.0     # ignore small local jitter (raised from 400)
-ERRATIC_MIN_SIGN_CHANGES: int   = 4         # left-right-left-right pattern (raised from 3)
+# Erratic driving — expressed in SECONDS and BOX WIDTHS so dense (30 fps) and sparse
+# (0.5 s) sampling behave the same. A reversal counts only after the vehicle has moved
+# >= ERRATIC_REVERSAL_W box widths back the other way (hysteresis kills jitter).
+ERRATIC_WINDOW_S:         float = 4.0       # sliding window in seconds
+ERRATIC_MIN_SPAN_S:       float = 2.5       # need this much footage before judging
+ERRATIC_MIN_STEP_PX:      float = 12.0      # ignore tiny detector jitter (camera-motion estimate only)
+ERRATIC_REVERSAL_W:       float = 0.5       # lateral swing (in box widths) that counts as a reversal
+ERRATIC_MIN_LATERAL_W:    float = 2.0       # total lateral range in box widths
+ERRATIC_MIN_REVERSALS:    int   = 3         # left-right-left-right
+ERRATIC_LEGACY_DT_S:      float = 0.5       # assumed spacing when update() gets no timestamp
 
 # Signal detection
 SIGNAL_RED_HSV_LOWER   = np.array([0,   100, 100], dtype=np.uint8)
@@ -129,6 +133,17 @@ class WheelieDetector:
 
     def __init__(self) -> None:
         self._consecutive: int = 0
+
+    @staticmethod
+    def tall_indices(motorcycle_detections: list) -> set[int]:
+        """Indices of motorcycle boxes whose height/width exceeds the wheelie ratio (per-vehicle, per-frame)."""
+        out: set[int] = set()
+        for i, det in enumerate(motorcycle_detections):
+            x1, y1, x2, y2 = det.bbox
+            w = x2 - x1
+            if w >= 1 and (y2 - y1) / w >= WHEELIE_ASPECT_RATIO_THRESHOLD:
+                out.add(i)
+        return out
 
     def update(self, motorcycle_detections: list) -> bool:
         """
@@ -214,22 +229,27 @@ class ErraticDrivingDetector:
     MIN_VEHICLES_FOR_COMPENSATION: int = 3
 
     def __init__(self) -> None:
-        # track_id → deque of (compensated_cx, cy)
-        self._history: dict[int, deque[tuple[float, float]]] = {}
+        # track_id → deque of (compensated_cx, cy, timestamp, box_width)
+        self._history: dict[int, deque] = {}
         # track_id → last raw (cx, cy) — for computing per-frame deltas
         self._last_pos: dict[int, tuple[float, float]] = {}
+        self._n_updates: int = 0
         self._vehicle_classes = {
             "motorcycle", "bicycle", "car", "bus", "truck", "mini_lcv",
             "auto_rickshaw", "vehicle",
         }
 
-    def update(self, tracked_dets: list) -> set[int]:
+    def update(self, tracked_dets: list, timestamp: float | None = None) -> set[int]:
         """
         Update track histories and return set of track IDs showing erratic motion.
         tracked_dets: list[TrackedDetection] from tracker.py
+        timestamp:    real frame time in seconds (legacy callers omit it → 0.5 s spacing)
         """
+        ts = timestamp if timestamp is not None else self._n_updates * ERRATIC_LEGACY_DT_S
+        self._n_updates += 1
         # ── Step 1: collect current raw centroids for all tracked vehicles ────
         current_raw: dict[int, tuple[float, float]] = {}
+        widths: dict[int, float] = {}
         for det in tracked_dets:
             tid = getattr(det, "track_id", -1)
             if tid < 0:
@@ -238,6 +258,7 @@ class ErraticDrivingDetector:
                 continue
             x1, y1, x2, y2 = det.bbox
             current_raw[tid] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+            widths[tid] = max(1.0, x2 - x1)
 
         # ── Step 2: compute camera motion as median lateral displacement ───────
         lateral_deltas: list[float] = []
@@ -273,54 +294,44 @@ class ErraticDrivingDetector:
             else:
                 comp_cx = cx                           # first sighting — no delta yet
 
-            if tid not in self._history:
-                self._history[tid] = deque(maxlen=ERRATIC_WINDOW_FRAMES)
-            self._history[tid].append((comp_cx, cy))
+            hist = self._history.setdefault(tid, deque())
+            hist.append((comp_cx, cy, ts, widths[tid]))
+            while hist and ts - hist[0][2] > ERRATIC_WINDOW_S:
+                hist.popleft()
             self._last_pos[tid] = (cx, cy)             # store RAW for next frame's delta
 
-            # Analyse only when history window is full
-            if len(self._history[tid]) < ERRATIC_WINDOW_FRAMES:
+            if len(hist) < 4 or (hist[-1][2] - hist[0][2]) < ERRATIC_MIN_SPAN_S:
                 continue
 
-            pts = list(self._history[tid])
-            vectors: list[tuple[float, float]] = []
-            for a, b in zip(pts, pts[1:]):
-                dx = b[0] - a[0]
-                dy = b[1] - a[1]
-                if math.hypot(dx, dy) >= ERRATIC_MIN_STEP_PX:
-                    vectors.append((dx, dy))
+            w = sorted(p[3] for p in hist)[len(hist) // 2]          # median box width in window
+            xs = [p[0] for p in hist]
+            lateral_range = (max(xs) - min(xs)) / w
+            # hysteresis reversal count: a swing of >= ERRATIC_REVERSAL_W widths against the
+            # current direction counts as one reversal; jitter smaller than that never does
+            reversals, direction, extreme = 0, 0, xs[0]
+            for x in xs[1:]:
+                if direction >= 0 and x > extreme:
+                    extreme = x
+                    direction = 1
+                elif direction <= 0 and x < extreme:
+                    extreme = x
+                    direction = -1
+                elif direction == 1 and extreme - x >= ERRATIC_REVERSAL_W * w:
+                    reversals += 1; direction, extreme = -1, x
+                elif direction == -1 and x - extreme >= ERRATIC_REVERSAL_W * w:
+                    reversals += 1; direction, extreme = 1, x
 
-            if len(vectors) < 3:
-                continue
-
-            dx_signs = [
-                1 if dx > 0 else -1
-                for dx, _ in vectors
-                if abs(dx) >= ERRATIC_MIN_STEP_PX
-            ]
-            sign_changes = sum(
-                1 for a, b in zip(dx_signs, dx_signs[1:])
-                if a != b
-            )
-            xs = [p[0] for p in pts]
-            lateral_range = max(xs) - min(xs)
-            path_length   = sum(math.hypot(dx, dy) for dx, dy in vectors)
-
-            if (
-                sign_changes  >= ERRATIC_MIN_SIGN_CHANGES
-                and lateral_range >= ERRATIC_MIN_LATERAL_RANGE_PX
-                and path_length   >= ERRATIC_MIN_PATH_PX
-            ):
-                logger.info(
-                    "Erratic driving: track_id=%d sign_changes=%d lateral_range=%.1f path=%.1f",
-                    tid, sign_changes, lateral_range, path_length,
-                )
+            if reversals >= ERRATIC_MIN_REVERSALS and lateral_range >= ERRATIC_MIN_LATERAL_W:
+                logger.info("Erratic driving: track_id=%d reversals=%d lateral_range=%.1fw over %.1fs",
+                            tid, reversals, lateral_range, hist[-1][2] - hist[0][2])
                 erratic_ids.add(tid)
 
         return erratic_ids
 
     def reset(self) -> None:
         self._history.clear()
+        self._last_pos.clear()
+        self._n_updates = 0
 
 
 # ── 5. Traffic signal color detection ────────────────────────────────────────

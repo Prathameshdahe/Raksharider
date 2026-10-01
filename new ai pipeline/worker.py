@@ -1,423 +1,377 @@
 """
-worker.py
----------
-Supabase queue polling worker for the DriveTrust AI pipeline.
+worker.py — RoadWatch queue worker (v3)
 
-Wraps run_pipeline.run() with a polling loop:
-  1. Calls claim_next_video() to atomically claim an unprocessed video
-  2. Downloads the video from Supabase Storage to a temp file
-  3. Runs the existing pipeline (run_pipeline.run)
-  4. Uploads evidence frames to Azure Blob Storage
-  5. Inserts vehicle_records and violations rows into Supabase
-  6. Marks the video as 'processed' or 'failed' with error_reason
+  claim_next_video()        priority-ordered, leased, self-healing (Postgres function)
+  download                  from videos.blob_url
+  run_pipeline.run()        → ResultPackage (contract 2.0), evidence + detection video on disk
+  upload                    evidence to private blob storage under {video_id}/{run_id}/...
+  persist_run_result(jsonb) ONE database call, ONE transaction, owned by the backend team;
+                            idempotent on run_id; creates cases; marks the video processed
+  failure                   videos.status='failed' + error_reason + error_category, nothing partial
 
-Does NOT modify run_pipeline.py — only wraps it.
-
-Usage:
-    python worker.py [--interval 0.5] [--poll 10] [--vlm] [--once]
-
-Options:
-    --interval FLOAT   Frame sampling interval in seconds (default: 0.5)
-    --poll     INT     Seconds between queue checks when idle (default: 10)
-    --vlm              Enable VLM tiebreaker (Gemini Vision)
-    --once             Process one video then exit (for testing)
+The worker connects as the scoped role drivetrust_ai_worker. It has NO Supabase
+service key: a service key bypasses row-level security. Missing env vars fail loudly.
+run_id is deterministic per (video, attempt) so a retry of the same attempt is a no-op.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
-import uuid
+import urllib.request
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-
-# ── Logging ─────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("worker")
 
-# ── Pipeline import ──────────────────────────────────────────────────────────
 from run_pipeline import run as pipeline_run
+from pipeline.contract import validate_package
 
-# ── Azure Blob Storage (evidence upload) — graceful if not configured ────────
 try:
-    from azure_storage import upload_all_evidence
+    from azure_storage import upload_evidence as _azure_upload
     _azure_ok = True
 except ImportError:
     _azure_ok = False
-    logger.warning("[azure] azure-storage-blob not installed — evidence will stay local")
+    logger.warning("[azure] azure-storage-blob not installed — evidence stays local")
 
-# ── Supabase REST (for Storage download + table inserts via HTTP) ────────────
-import urllib.request
-import json
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://fbjjoktuzirhpqqpzfbo.supabase.co")
-# Worker uses the service role to bypass RLS for inserts
-SUPABASE_SERVICE_KEY = os.environ.get(
-    "SUPABASE_SERVICE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZiampva3R1emlyaHBxcXB6ZmJvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NTQyMDUzNywiZXhwIjoyMTAwOTk2NTM3fQ.x_IhQuYZvB_JWvkab2GyPhzaIXv9f_ETst0vCGHvVUI"
-)
+REQUIRED_ENV = ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")
+EVIDENCE_ROOT = Path("pipeline/evidence_output")
 
 
-# ── DB connection (for claim_next_video + status updates) ────────────────────
-def get_db_conn():
-    """Return a psycopg2 connection using env vars from .env"""
-    return psycopg2.connect(
-        host=os.environ["DB_HOST"],
-        port=os.environ["DB_PORT"],
-        dbname=os.environ["DB_NAME"],
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        sslmode="require",
-        connect_timeout=10,
-    )
+# ── Health endpoint (deployment plumbing only; the pipeline itself is untouched) ──────────────
+# A hosted worker (Docker, Hugging Face Space, any PaaS) needs something to answer HTTP so the
+# host can tell "running" from "crashed", keep-alive pingers can reach it, and an operator can
+# see the last job without opening the database. Off by default; set WORKER_HTTP_PORT to enable
+# (the Dockerfile sets 7860). Nothing here is ever written to the DB.
+
+HEALTH = {
+    "service": "roadwatch-ai-worker", "version": "3.1", "status": "starting",
+    "started_at": None, "last_heartbeat_at": None, "last_claim_at": None,
+    "jobs_done": 0, "jobs_failed": 0, "current": None, "last_job": None,
+}
 
 
-def supabase_request(method: str, path: str, body: dict | None = None) -> dict | list:
-    """Make a REST API call to Supabase using the service_role key."""
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    data = json.dumps(body).encode() if body else None
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+def _utcnow() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def start_health_server() -> None:
+    port = os.environ.get("WORKER_HTTP_PORT", "").strip()
+    if not port:
+        return
+    import http.server
+    import socketserver
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = json.dumps(HEALTH, default=str).encode()
+            self.send_response(200 if HEALTH["status"] != "crashed" else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):  # quiet: pingers hit this every few minutes
+            return
+
+    class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        err = e.read().decode()
-        logger.error("Supabase REST %s %s -> %d %s", method, path, e.code, err)
+        srv = _Server(("0.0.0.0", int(port)), _Handler)
+    except Exception as e:
+        logger.warning("[health] could not bind port %s: %s", port, e)
+        return
+    threading.Thread(target=srv.serve_forever, name="worker-health", daemon=True).start()
+    logger.info("[health] GET http://0.0.0.0:%s/health", port)
+
+
+# ── DB ────────────────────────────────────────────────────────────────────────
+
+def require_env() -> None:
+    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+    if missing:
+        raise SystemExit(f"Missing required env vars: {missing}. The worker never falls back to a service key.")
+    if os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        logger.warning("A Supabase service key is present in the environment. The worker does not use it; remove it.")
+
+
+def get_db_conn():
+    return psycopg2.connect(host=os.environ["DB_HOST"], port=os.environ["DB_PORT"], dbname=os.environ["DB_NAME"],
+                            user=os.environ["DB_USER"], password=os.environ["DB_PASSWORD"], sslmode="require", connect_timeout=10)
+
+
+def claim_next_video(conn) -> Optional[dict]:
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM public.claim_next_video();")
+        row = cur.fetchone()
+    conn.commit()
+    return dict(row) if row and row.get("id") else None
+
+
+class LeaseRenewer:
+    """
+    Keeps videos.claimed_at fresh while a job runs.
+
+    The queue reaps any video stuck in 'processing' past the lease window, but a
+    single clip can legitimately take many minutes on CPU. Without renewal a slow
+    job is reaped mid-run and processed twice. A daemon thread renews every
+    `period` seconds and stops when the job ends.
+    """
+
+    def __init__(self, video_id: str, period: float = 60.0) -> None:
+        self.video_id, self.period = video_id, period
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.period):
+            try:
+                conn = get_db_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE public.videos SET claimed_at = now() "
+                                    "WHERE id = %s AND status = 'processing';", (self.video_id,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.debug("lease renewal skipped: %s", e)
+
+    def __enter__(self) -> "LeaseRenewer":
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+
+def heartbeat(conn) -> None:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE public.system_settings SET value = to_jsonb(now()::text), updated_at = now() WHERE key = 'worker_last_seen';")
+        conn.commit()
+        HEALTH["last_heartbeat_at"] = _utcnow()
+    except Exception as e:
+        conn.rollback()
+        logger.debug("heartbeat skipped: %s", e)
+
+
+def mark_failed(video_id: str, reason: str, category: str = "pipeline") -> None:
+    """Own connection so it works even when the main transaction is dead."""
+    try:
+        conn = get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE public.videos SET status = 'failed', error_reason = %s, error_category = %s WHERE id = %s;",
+                            (reason[:2000], category, video_id))
+            conn.commit()
+            logger.info("Video %s -> failed [%s] %s", video_id, category, reason[:120])
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("Could not mark video %s failed: %s", video_id, e)
+
+
+def persist_package(conn, package: dict) -> dict:
+    """ONE call, ONE transaction. The function raises (and nothing persists) on any invariant violation."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT public.persist_run_result(%s::jsonb);", (json.dumps(package, default=str),))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row and row[0] is not None else {}
+    except Exception:
+        conn.rollback()
         raise
 
 
-# ── Step 1: Claim next unprocessed video ────────────────────────────────────
-def claim_next_video() -> dict | None:
-    """
-    Call claim_next_video() Postgres function.
-    Returns the video row dict, or None if the queue is empty.
-    """
-    conn = get_db_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM claim_next_video();")
-            row = cur.fetchone()
-        conn.commit()
-        return dict(row) if row and row.get("id") else None
-    except Exception as e:
-        logger.error("claim_next_video failed: %s", e)
-        conn.rollback()
-        return None
-    finally:
-        conn.close()
+# ── Download / upload ─────────────────────────────────────────────────────────
 
-
-# ── Step 2: Update video status ───────────────────────────────────────────────
-def update_video_status(video_id: str, status: str, error_reason: str = None) -> None:
-    """Update the status and optionally error_reason of a video row."""
-    patch = {"status": status}
-    if error_reason:
-        patch["error_reason"] = error_reason[:2000]
-    if status == "processed":
-        from datetime import datetime, timezone
-        patch["processed_at"] = datetime.now(timezone.utc).isoformat()
-
-    try:
-        supabase_request("PATCH", f"videos?id=eq.{video_id}", patch)
-        logger.info("Video %s -> %s", video_id, status)
-    except Exception as e:
-        logger.error("Could not update video %s status: %s", video_id, e)
-
-
-# ── Step 3: Download video from Supabase Storage ─────────────────────────────
-def download_video(video: dict, dest_dir: Path) -> Path | None:
-    """
-    Download the video file from Supabase Storage to a temp file.
-    Tries blob_url first (public URL), then video_url, then storage download API.
-    Returns the local path or None on failure.
-    """
+def download_video(video: dict, dest_dir: Path) -> Optional[Path]:
     ext = ".mp4"
-    filename = video.get("filename", "")
-    if filename and "." in filename:
+    filename = video.get("filename") or ""
+    if "." in filename:
         ext = "." + filename.rsplit(".", 1)[-1]
-
     local_path = dest_dir / f"{video['id']}{ext}"
-
-    # Try blob_url or video_url (public/signed URL)
-    for url_key in ("blob_url", "video_url"):
-        url = video.get(url_key)
-        if url and url.startswith("http"):
-            try:
-                logger.info("Downloading from %s: %s", url_key, url)
-                req = urllib.request.Request(url, headers={"User-Agent": "drivetrust-worker/1.0"})
-                with urllib.request.urlopen(req, timeout=120) as resp, open(local_path, "wb") as f:
-                    shutil.copyfileobj(resp, f)
-                logger.info("Downloaded %s bytes -> %s", local_path.stat().st_size, local_path)
-                return local_path
-            except Exception as e:
-                logger.warning("Download from %s failed: %s", url_key, e)
-
-    # Fallback: Supabase Storage download API
-    storage_path = video.get("local_path") or filename
-    if storage_path:
+    for key in ("blob_url", "video_url"):
+        url = video.get(key)
+        if not (url and str(url).startswith("http")):
+            continue
         try:
-            dl_url = f"{SUPABASE_URL}/storage/v1/object/videos/{storage_path}"
-            logger.info("Trying Supabase Storage API: %s", dl_url)
-            req = urllib.request.Request(dl_url, headers={
-                "apikey": SUPABASE_SERVICE_KEY,
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-            })
-            with urllib.request.urlopen(req, timeout=120) as resp, open(local_path, "wb") as f:
+            req = urllib.request.Request(url, headers={"User-Agent": "roadwatch-worker/3.0"})
+            with urllib.request.urlopen(req, timeout=180) as resp, open(local_path, "wb") as f:
                 shutil.copyfileobj(resp, f)
-            logger.info("Downloaded via storage API: %s bytes", local_path.stat().st_size)
-            return local_path
+            if local_path.stat().st_size > 0:
+                return local_path
         except Exception as e:
-            logger.error("Storage API download failed: %s", e)
-
-    logger.error("Cannot download video %s — no usable URL found", video["id"])
+            logger.warning("Download from %s failed: %s", key, e)
     return None
 
 
-# ── Step 4: Insert vehicle_records ───────────────────────────────────────────
-def insert_vehicle_records(video_id: str, vehicle_records: list) -> None:
-    """Insert pipeline vehicle_records into the Supabase vehicle_records table."""
-    if not vehicle_records:
-        return
-
-    rows = []
-    for vr in vehicle_records:
-        rows.append({
-            "id": str(uuid.uuid4()),
-            "video_id": video_id,
-            "track_id": int(vr.get("track_id", 0)),
-            "plate_text": vr.get("plate_text") or None,
-            "vehicle_type": vr.get("vehicle_class") or "unknown",
-            "frames_observed": int(vr.get("frames_observed", 0)),
-            "first_seen": float(vr.get("first_seen", 0.0)),
-            "last_seen": float(vr.get("last_seen", 0.0)),
-            "review_status": "needs_review" if vr.get("has_violation") else "clear",
-        })
-
-    try:
-        supabase_request("POST", "vehicle_records", rows)
-        logger.info("Inserted %d vehicle_record(s) for video %s", len(rows), video_id)
-    except Exception as e:
-        logger.error("Failed to insert vehicle_records: %s", e)
-
-
-# ── Step 5: Insert violations ─────────────────────────────────────────────────
-def insert_violations(video_id: str, report: dict, vehicle_records: list) -> None:
-    """Insert violations into the Supabase violations table."""
-    from datetime import datetime, timezone
-
-    report_id_pseudo = abs(hash(video_id)) % (10 ** 15)
-
-    rows = []
-    for vr in vehicle_records:
-        for viol_name in (vr.get("confirmed_violations") or []):
-            verdict = (vr.get("violation_verdicts") or {}).get(viol_name, {})
-            conf = verdict.get("confidence", 0.8) if isinstance(verdict, dict) else 0.8
-            rows.append({
-                "report_id": report_id_pseudo,
-                "violation_type": viol_name,
-                "confidence": round(float(conf), 4),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
-
-    clip_violations = report.get("violations_detected", [])
-    existing_types = {r["violation_type"] for r in rows}
-    for viol_name in clip_violations:
-        if viol_name not in existing_types:
-            rows.append({
-                "report_id": report_id_pseudo,
-                "violation_type": viol_name,
-                "confidence": round(float(report.get("severity_score", 0.7)), 4),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
-
-    if not rows:
-        logger.info("No violations to insert for video %s", video_id)
-        return
-
-    try:
-        supabase_request("POST", "violations", rows)
-        logger.info("Inserted %d violation(s) for video %s", len(rows), video_id)
-    except Exception as e:
-        logger.error("Failed to insert violations: %s", e)
-
-
-# ── Main processing function ──────────────────────────────────────────────────
-def process_video(video: dict, interval: float, use_vlm: bool) -> bool:
+def upload_artifacts(video_id: str, run_id: str, output_dir: Path, package: dict) -> Dict[str, str]:
     """
-    Full processing cycle for one video.
-    Returns True on success, False on failure.
+    Upload every evidence file and the detection video under immutable, fully
+    qualified names. Raises if anything the package promises cannot be stored:
+    a case whose evidence is missing is worse than a failed job, because the
+    reviewer would be asked to decide on a finding they cannot see.
     """
-    video_id = video["id"]
-    logger.info("=" * 60)
-    logger.info("Processing video: %s (%s)", video_id, video.get("filename"))
-    logger.info("=" * 60)
+    rels = [e["path"] for e in package.get("evidence", [])]
+    if package.get("detection_video"):
+        rels.append(package["detection_video"])
+    if not rels:
+        return {}
+    if not _azure_ok:
+        raise RuntimeError("azure-storage-blob is not installed; evidence cannot be stored")
+    uploaded: Dict[str, str] = {}
+    missing: List[str] = []
+    for rel in rels:
+        local = output_dir / rel
+        if not local.exists():
+            missing.append(f"{rel} (not written)")
+            continue
+        blob_name = f"{video_id}/{run_id}/{rel}"
+        if _azure_upload(local, blob_name=blob_name):
+            uploaded[rel] = blob_name
+        else:
+            missing.append(f"{rel} (upload failed)")
+    if missing:
+        raise RuntimeError(f"{len(missing)} artifact(s) could not be stored: {missing[:5]}")
+    return uploaded
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="drivetrust_"))
-    output_dir = Path("pipeline/evidence_output") / video_id
 
+def run_id_for(video_id: str, attempt: int) -> str:
+    """Deterministic per attempt → retrying the same attempt is a no-op in persist_run_result."""
+    return hashlib.sha1(f"{video_id}:{attempt}".encode()).hexdigest()[:12]
+
+
+# ── One job ───────────────────────────────────────────────────────────────────
+
+def process_video(conn, video: dict, interval: Optional[float], use_vlm: bool) -> bool:
+    video_id = str(video["id"])
+    attempt = int(video.get("attempts") or 1)
+    run_id = run_id_for(video_id, attempt)
+    output_dir = EVIDENCE_ROOT / video_id / run_id
+    logger.info("=" * 60)
+    logger.info("Processing video %s (run %s, attempt %s, priority %s)", video_id, run_id, attempt, video.get("priority"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="roadwatch_"))
     try:
-        # Download
+      with LeaseRenewer(video_id):
         local_video = download_video(video, tmpdir)
         if not local_video:
-            update_video_status(video_id, "failed", "Could not download video file")
+            mark_failed(video_id, "Could not download video file (no usable blob_url)", "download")
             return False
-
-        # Run pipeline
-        logger.info("Running pipeline on %s ...", local_video)
-        report = pipeline_run(
-            source=str(local_video),
-            interval=interval,
-            output_dir=output_dir,
-            use_tracker=True,
-            use_vlm=use_vlm,
-            vehicle_type=video.get("vehicle_type") or "two_wheeler",
-        )
-
+        try:
+            report = pipeline_run(str(local_video), interval=interval, output_dir=output_dir, use_vlm=use_vlm,
+                                  vehicle_type=video.get("vehicle_type") or "two_wheeler",
+                                  declared_violation=video.get("declared_violation"),
+                                  claimed_plate=video.get("claimed_plate"),
+                                  submission_id=video_id, run_id=run_id)
+        except AssertionError as e:
+            mark_failed(video_id, f"AssertionError: {e}", "contract")
+            return False
+        except Exception as e:
+            mark_failed(video_id, f"{type(e).__name__}: {e}", "pipeline")
+            return False
         if report is None:
-            update_video_status(video_id, "failed", "Pipeline returned no report")
+            mark_failed(video_id, "Pipeline returned no report", "pipeline")
             return False
 
-        # ── Upload evidence frames to Azure Blob Storage ──────────────────────
-        evidence_urls = []
-        if _azure_ok and output_dir.exists():
-            logger.info("Uploading evidence frames to Azure Blob Storage...")
-            uploaded = upload_all_evidence(str(output_dir))
-            evidence_urls = uploaded or []
-            if evidence_urls:
-                logger.info("Azure upload: %d frame(s) uploaded", len(evidence_urls))
-                for url in evidence_urls:
-                    logger.info("  → %s", url)
-            else:
-                logger.warning(
-                    "Azure returned no URLs — check AZURE_STORAGE_CONNECTION_STRING in .env"
-                )
-        elif not _azure_ok:
-            logger.info(
-                "[azure] Skipped — azure-storage-blob not installed. Evidence at: %s", output_dir
-            )
-
-        # ── Write to Supabase ─────────────────────────────────────────────────
-        pipeline_vehicle_records = report.get("vehicle_records") or []
-
-        insert_vehicle_records(video_id, pipeline_vehicle_records)
-        insert_violations(video_id, report, pipeline_vehicle_records)
-
-        # Store Azure evidence URLs on vehicle_records rows
-        if evidence_urls:
-            try:
-                supabase_request(
-                    "PATCH",
-                    f"vehicle_records?video_id=eq.{video_id}",
-                    {"evidence_urls": evidence_urls},
-                )
-                logger.info("Stored %d Azure URL(s) on vehicle_records", len(evidence_urls))
-            except Exception as e:
-                logger.warning("Could not update evidence_urls column: %s", e)
-
-        # Mark complete
-        update_video_status(video_id, "processed")
-        logger.info("Video %s processed successfully.", video_id)
+        package = {k: report[k] for k in ("contract_version", "run_id", "submission_id", "pipeline_version", "model_versions",
+                                          "started_at", "finished_at", "duration_seconds", "allegation", "vehicle_tracks",
+                                          "plate_observations", "findings", "evidence", "vlm_calls", "summary", "detection_video")}
+        validate_package(package)
+        try:
+            blob_map = upload_artifacts(video_id, run_id, output_dir, package)
+        except Exception as e:
+            mark_failed(video_id, f"{type(e).__name__}: {e}", "storage")
+            return False
+        package["blob_prefix"] = f"{video_id}/{run_id}/"
+        package["uploaded"] = blob_map
+        try:
+            persist_package(conn, package)
+        except Exception as e:
+            mark_failed(video_id, f"{type(e).__name__}: {e}", "persist")
+            return False
+        logger.info("Video %s -> processed (%d vehicle(s), %d queued finding(s), %d file(s) uploaded)",
+                    video_id, len(package["vehicle_tracks"]), package["summary"].get("findings_queued", 0), len(blob_map))
         return True
-
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {e}"
-        logger.exception("Pipeline failed for video %s: %s", video_id, error_msg)
-        update_video_status(video_id, "failed", error_msg)
+        mark_failed(video_id, f"{type(e).__name__}: {e}", "pipeline")
         return False
-
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ── Poll loop ─────────────────────────────────────────────────────────────────
-def run_worker(interval: float, poll_seconds: int, use_vlm: bool, once: bool) -> None:
-    logger.info("=" * 60)
-    logger.info("DriveTrust AI Worker — Queue Polling Mode")
-    logger.info("  Supabase:    %s", SUPABASE_URL)
-    logger.info("  Poll every:  %ds when idle", poll_seconds)
-    logger.info("  VLM:         %s", "enabled" if use_vlm else "disabled")
-    logger.info("  Once mode:   %s", "yes" if once else "no")
-    logger.info("  Azure:       %s", "enabled" if _azure_ok else "disabled (install azure-storage-blob)")
-    logger.info("=" * 60)
 
-    try:
-        conn = get_db_conn()
-        conn.close()
-        logger.info("DB connection: OK")
-    except Exception as e:
-        logger.error("Cannot connect to Supabase DB: %s", e)
-        sys.exit(1)
-
-    logger.info("Worker polling for videos... (Ctrl+C to stop)")
-
-    idle_logged = False
+def run_worker(interval: Optional[float], poll_seconds: int, use_vlm: bool, once: bool) -> None:
+    require_env()
+    HEALTH.update(status="idle", started_at=_utcnow(), role=os.environ["DB_USER"].split(".")[0],
+                  vlm=use_vlm, azure=_azure_ok, frames="dense" if interval is None else f"every {interval}s")
+    start_health_server()
+    logger.info("RoadWatch worker v3 — role %s, poll %ds, VLM %s, Azure %s, frames %s",
+                os.environ["DB_USER"], poll_seconds, "on" if use_vlm else "off", "on" if _azure_ok else "off",
+                "dense" if interval is None else f"every {interval}s")
     while True:
+        conn = None
         try:
-            video = claim_next_video()
-
-            if video is None:
-                if not idle_logged:
-                    logger.info("Queue empty — waiting for new uploads...")
-                    idle_logged = True
-                time.sleep(poll_seconds)
+            conn = get_db_conn()
+            heartbeat(conn)
+            video = claim_next_video(conn)
+            if video:
+                HEALTH.update(status="processing", last_claim_at=_utcnow(),
+                              current={"video_id": str(video["id"]), "attempt": video.get("attempts"), "priority": video.get("priority")})
+                started = time.time()
+                ok = process_video(conn, video, interval, use_vlm)
+                HEALTH["jobs_done" if ok else "jobs_failed"] += 1
+                HEALTH.update(status="idle", current=None,
+                              last_job={"video_id": str(video["id"]), "ok": ok, "seconds": int(time.time() - started), "finished_at": _utcnow()})
+                if once:
+                    return
                 continue
-
-            idle_logged = False
-            process_video(video, interval=interval, use_vlm=use_vlm)
-
+            HEALTH["status"] = "idle"
             if once:
-                logger.info("--once flag set: exiting after one video.")
-                break
-
+                logger.info("Queue empty — exiting (--once)")
+                return
         except KeyboardInterrupt:
-            logger.info("Worker stopped by user.")
-            break
+            return
         except Exception as e:
-            logger.error("Unexpected error in poll loop: %s", e)
-            time.sleep(poll_seconds)
+            HEALTH.update(status="degraded", last_error=f"{type(e).__name__}: {e}"[:300])
+            logger.error("Worker loop error: %s", e)
+        finally:
+            if conn is not None:
+                conn.close()
+        time.sleep(poll_seconds)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(
-        description="DriveTrust AI Worker — Supabase queue polling mode"
-    )
-    parser.add_argument("--interval", type=float, default=0.5,
-                        help="Frame sampling interval in seconds (default: 0.5)")
-    parser.add_argument("--poll", type=int, default=10,
-                        help="Seconds between queue checks when idle (default: 10)")
-    parser.add_argument("--vlm", action="store_true",
-                        help="Enable VLM tiebreaker (Gemini Vision)")
-    parser.add_argument("--once", action="store_true",
-                        help="Process one video then exit (for testing)")
-    args = parser.parse_args()
-
-    run_worker(
-        interval=args.interval,
-        poll_seconds=args.poll,
-        use_vlm=args.vlm,
-        once=args.once,
-    )
+    p = argparse.ArgumentParser(description="RoadWatch queue worker")
+    p.add_argument("--interval", type=float, default=None, help="legacy sparse sampling; default dense (~15 fps)")
+    p.add_argument("--poll", type=int, default=10)
+    p.add_argument("--vlm", action="store_true")
+    p.add_argument("--once", action="store_true")
+    a = p.parse_args()
+    run_worker(a.interval, a.poll, a.vlm, a.once)
 
 
 if __name__ == "__main__":
