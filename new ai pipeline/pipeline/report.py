@@ -33,7 +33,7 @@ from pipeline.verification import VerificationResult
 logger = logging.getLogger(__name__)
 
 EVIDENCE_OUTPUT_DIR: Path = Path(__file__).parent / "evidence_output"
-PIPELINE_VERSION = "2.0.0"
+PIPELINE_VERSION = "2.1.0"
 
 
 def build_report(
@@ -47,7 +47,10 @@ def build_report(
     run_id:               Optional[str] = None,
     track_history:        Optional[Dict] = None,   # {track_id: track_info_dict}
     vehicles_detected:    Optional[List[Dict[str, Any]]] = None,
-    vehicle_records:      Optional[List[Dict[str, Any]]] = None,  # VehicleStateRegistry export
+    vehicle_records:      Optional[List[Dict[str, Any]]] = None,  # VehicleStateRegistry export (contract.VehicleRecord dicts)
+    subject_track_id:     Optional[int] = None,     # the vehicle the clip-level verdict is about
+    evidence_strength:    Optional[float] = None,   # legacy composite (consistency/yolo/ocr) — NOT seriousness
+    vlm_calls:            Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Build the final JSON-serialisable report dict and save evidence frames.
@@ -88,10 +91,12 @@ def build_report(
         "run_id":           run_id,
         "generated_at":     datetime.now(timezone.utc).isoformat(),
 
-        # ── Top-level verdict ─────────────────────────────────────────────────
+        # ── Top-level verdict (derived from per-vehicle findings) ─────────────
         "status":             vr.status,
-        "severity_score":     vr.severity_score,
+        "severity_score":     vr.severity_score,        # policy seriousness of the flagged violations (0..1)
+        "evidence_strength":  evidence_strength if evidence_strength is not None else vr.severity_score,
         "violations_detected": vr.violations_detected,
+        "subject_track_id":   subject_track_id,
 
         # ── Vehicle & identity ────────────────────────────────────────────────
         "vehicle": {
@@ -132,6 +137,7 @@ def build_report(
         "vlm_review": {
             "fired":     bool(getattr(vr, "vlm_reasoning", "")),
             "reasoning": getattr(vr, "vlm_reasoning", ""),
+            "calls":     vlm_calls or [],   # one entry per external-model call: scope, output, model, error
         },
 
         # ── Meta ──────────────────────────────────────────────────────────────
@@ -172,12 +178,14 @@ def build_report(
             enriched.append(vd)
         report["vehicle"]["all_tracked_vehicles"] = enriched
 
-        # Count vehicles with confirmed violations for the summary
-        n_with_violation = sum(1 for v in vehicle_records if v.get("has_violation"))
+        # Summary = what a human must look at. "flagged" = confirmed OR needs_review.
+        n_confirmed = sum(1 for v in vehicle_records if v.get("has_violation"))
+        n_flagged   = sum(1 for v in vehicle_records if v.get("needs_review"))
         report["summary"] = {
-            "total_vehicles_tracked": len(vehicle_records),
-            "vehicles_with_violations": n_with_violation,
-            "vehicles_clean": len(vehicle_records) - n_with_violation,
+            "total_vehicles_tracked":   len(vehicle_records),
+            "vehicles_with_violations": n_flagged,
+            "vehicles_confirmed":       n_confirmed,
+            "vehicles_clean":           len(vehicle_records) - n_flagged,
         }
 
     # Save report.json

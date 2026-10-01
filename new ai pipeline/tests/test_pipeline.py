@@ -159,16 +159,29 @@ class TestHelmetAssociation:
         assert verdict.helmet_status == "helmet"
         assert "no_helmet" not in verdict.violations
 
-    def test_no_helmet_high_conf_person(self):
-        """High-confidence person with no helmet in head region → 'no_helmet'."""
+    def test_no_helmet_requires_positive_evidence(self):
+        """No helmet detection at all → 'unclear' (absence is not evidence), never a violation."""
         fd = make_fd(0.0, [
             make_detection("motorcycle", [0, 80, 200, 320]),
             make_detection("person",     [10, 100, 100, 300], conf=0.92),
-            # No helmet detection
+            # No helmet / no_helmet detection
+        ])
+        verdict = apply_rules(fd)
+        assert verdict.helmet_status == "unclear"
+        assert "no_helmet" not in verdict.violations
+        assert "no_helmet" in verdict.findings[0].unobservable
+
+    def test_no_helmet_detection_on_head_flags(self):
+        """A `no_helmet` box on the head region is positive evidence → 'no_helmet'."""
+        fd = make_fd(0.0, [
+            make_detection("motorcycle", [0, 80, 200, 320]),
+            make_detection("person",     [10, 100, 100, 300], conf=0.92),
+            make_detection("no_helmet",  [15, 102, 90, 145]),
         ])
         verdict = apply_rules(fd)
         assert verdict.helmet_status == "no_helmet"
         assert "no_helmet" in verdict.violations
+        assert verdict.findings[0].violations == ["no_helmet"] or "no_helmet" in verdict.findings[0].violations
 
     def test_unclear_low_conf_person_no_helmet(self):
         """Low-confidence person, no helmet → 'unclear' (ambiguous evidence)."""
@@ -189,8 +202,9 @@ class TestHelmetAssociation:
             make_detection("helmet",     [15, 200, 90, 250]),  # torso level
         ])
         verdict = apply_rules(fd)
-        # Helmet on torso should not count; high-conf person has no head-helmet
-        assert verdict.helmet_status == "no_helmet"
+        # Helmet on torso should not count; with no head evidence the call is 'unclear'
+        assert verdict.helmet_status == "unclear"
+        assert "no_helmet" not in verdict.violations
 
     def test_no_motorcycle_no_helmet_check(self):
         """Without a motorcycle, there are no riders, so no helmet check."""

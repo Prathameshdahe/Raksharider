@@ -1,0 +1,68 @@
+# External keep-alive for the free-tier stack.
+#
+#   Render free web services spin down after 15 min without traffic → ping /health?deep=1
+#   Supabase free projects pause after 7 days without API activity → the deep probe (and the
+#     optional direct REST ping below) count as activity
+#   An AI worker hosted on a free Space sleeps after 48 h idle → optional WORKER_HEALTH_URL ping
+#
+# The backend also pings itself from inside (app/services/keepalive.py); this workflow is the
+# second, independent pinger so a crashed or freshly deployed service is woken from outside.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   BACKEND_URL          optional, default https://raksharider.onrender.com
+#   SUPABASE_URL         optional, e.g. https://xxxx.supabase.co   (direct REST ping)
+#   SUPABASE_ANON_KEY    optional, the publishable/anon key          (direct REST ping)
+#   WORKER_HEALTH_URL    optional, e.g. https://<user>-roadwatch-worker.hf.space/health
+#
+# GitHub disables scheduled workflows after 60 days without a push to the repo;
+# any commit re-enables it. Cron is UTC; `*/10` can drift by a few minutes under load.
+
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Backend /health?deep=1 (Render + Supabase)
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          url="${BACKEND_URL:-https://raksharider.onrender.com}"
+          # A cold Render instance takes ~30-60 s to boot; retry rather than fail.
+          for i in 1 2 3 4; do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 90 "$url/health?deep=1" || echo 000)
+            echo "attempt $i → HTTP $code"
+            if [ "$code" = "200" ]; then cat /tmp/health.json; exit 0; fi
+            sleep 20
+          done
+          echo "::warning::backend did not answer 200 after 4 attempts (suspended? check the Render dashboard)"
+          cat /tmp/health.json 2>/dev/null || true
+
+      - name: Supabase REST ping (direct, optional)
+        if: ${{ env.SUPABASE_URL != '' && env.SUPABASE_ANON_KEY != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/system_settings?select=key&limit=1")
+          echo "supabase REST → HTTP $code"
+          [ "$code" = "200" ] || echo "::warning::Supabase REST did not answer 200 (paused? restore it in the dashboard)"
+
+      - name: AI worker health (optional)
+        if: ${{ env.WORKER_HEALTH_URL != '' }}
+        env:
+          WORKER_HEALTH_URL: ${{ secrets.WORKER_HEALTH_URL }}
+        run: |
+          code=$(curl -s -o /tmp/worker.json -w '%{http_code}' --max-time 60 "$WORKER_HEALTH_URL" || echo 000)
+          echo "worker → HTTP $code"; cat /tmp/worker.json 2>/dev/null || true

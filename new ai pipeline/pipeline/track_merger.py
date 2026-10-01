@@ -240,8 +240,11 @@ class TrackMerger:
                 if not a.raw_plates or not b.raw_plates:
                     continue
 
-                # Plate similarity
+                # Plate similarity — empty / whitespace reads carry no identity and
+                # must never merge two tracks (they used to: sim=0.00 passed the check).
                 score, best_pair = _plate_similarity(a.raw_plates, b.raw_plates)
+                if not best_pair[0].strip() or not best_pair[1].strip() or score <= 0.0:
+                    continue
                 if score < (1.0 - self.max_levenshtein / max(
                     len(best_pair[0]), len(best_pair[1]), 1
                 )):

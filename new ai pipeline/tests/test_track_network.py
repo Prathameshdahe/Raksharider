@@ -58,14 +58,14 @@ def test_vehicle_state_two_wheeler_gating():
             confidence=0.9,
         ))
     state.resolve()
-    assert state.violation_verdicts["no_helmet"].result == "not_present"
+    assert state.violation_verdicts["no_helmet"].result == "not_evaluated"
     assert "no_helmet" not in state.confirmed_violations()
 
 
 def test_vehicle_state_motorcycle_confirms_helmet_violation():
     """A motorcycle with sufficient positive observations MUST confirm."""
     state = VehicleState(track_id=2, vehicle_class="motorcycle")
-    for i in range(3):
+    for i in range(4):
         state.add_observation(VehicleObservation(
             frame_index=i,
             timestamp=i * 0.5,

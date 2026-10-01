@@ -70,3 +70,10 @@ logs/
 # Google OAuth secrets
 client_secret_*.json
 *.apps.googleusercontent.com.json
+
+# pytest scratch output from new ai pipeline/tests/test_plate_aggregator.py
+new ai pipeline/tests/_tmp/
+
+# ─── Claude Code: personal permission grants and generated knowledge graph ──
+.claude/settings.local.json
+graphify-out/

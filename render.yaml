@@ -1,0 +1,33 @@
+# Render Blueprint — RoadWatch.AI backend (FastAPI).
+# Dashboard → New → Blueprint → this repo. Secrets (sync: false) are entered once in the
+# Environment tab and never live in git. RENDER_EXTERNAL_URL is injected by Render and is
+# what the in-process keep-alive pings; nothing to configure for that.
+services:
+  - type: web
+    name: roadwatch-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: AZURE_STORAGE_CONNECTION_STRING
+        sync: false
+      - key: AZURE_EVIDENCE_CONTAINER
+        value: evidence
+      # Keep-alive: self-ping every 10 min + run check_idle_alerts(). Set to "0" to disable.
+      - key: KEEPALIVE_ENABLED
+        value: "1"
+      - key: KEEPALIVE_INTERVAL_S
+        value: "600"
+      # Extra allowed browser origins, comma-separated (e.g. a custom domain). Optional.
+      - key: CORS_EXTRA_ORIGINS
+        sync: false
