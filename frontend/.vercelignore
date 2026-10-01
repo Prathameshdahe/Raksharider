@@ -1,6 +1,7 @@
-# Files too large for Vercel free tier (100MB limit)
-logo.webm
-logo-white.webm
+# logo.webm / logo-white.webm are the Google Flow logo animations, transcoded to small
+# alpha-VP9 360px loops so they ship with every deploy (they used to be excluded here,
+# which made the <video> tags 404 on Vercel and the logo vanish).
+# logo-animation.mp4 is the unused 1 MB source export; keep it out of the deploy.
 logo-animation.mp4
 
 # Data files (served dynamically)

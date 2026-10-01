@@ -1172,8 +1172,8 @@ tr.muted td{opacity:.55}
 <div id="splash" onclick="splashVideoEnded()" title="Click to skip">
   <div id="splash-glow"></div>
   <div class="logo-wrap size-splash dark-logo" style="margin-bottom:12px;z-index:1">
-    <video id="splash-video" autoplay muted playsinline loop>
-      <source src="logo-white.webm" type="video/webm">
+    <video id="splash-video" autoplay muted playsinline loop poster="logo-white-poster.png?v=2">
+      <source src="logo-white.webm?v=2" type="video/webm">
     </video>
   </div>
   <div id="splash-wordmark">ROADWATCH<span style="color:#FF4A26">.AI</span></div>
@@ -1187,7 +1187,7 @@ tr.muted td{opacity:.55}
 <!-- ░░ PUBLIC LANDING (logged-out visitors) ░░ -->
 <div id="landing">
   <header class="ld-head">
-    <button class="ld-brand" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})"><span class="sl">//</span><div class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline src="logo.webm"></video></div>RoadWatch<span style="color:#FF4A26">.AI</span></button>
+    <button class="ld-brand" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})"><span class="sl">//</span><div class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline poster="logo-poster.png?v=2" src="logo.webm?v=2"></video></div>RoadWatch<span style="color:#FF4A26">.AI</span></button>
     <nav class="ld-nav" aria-label="Site">
       <a href="#how">How it works</a><a href="#sample">Sample</a><a href="#roles">Roles</a><a href="#privacy">Privacy</a><a href="#status-bar">Status</a>
     </nav>
@@ -1397,7 +1397,7 @@ tr.muted td{opacity:.55}
   <div id="login-panel">
     <div class="login-logo-row">
       <div class="logo-wrap size-md dark-logo">
-        <video autoplay loop muted playsinline src="logo-white.webm"></video>
+        <video autoplay loop muted playsinline poster="logo-white-poster.png?v=2" src="logo-white.webm?v=2"></video>
       </div>
       <span>ROADWATCH<span style="color:#FF4A26">.AI</span></span>
     </div>
@@ -1500,7 +1500,7 @@ tr.muted td{opacity:.55}
   <aside id="sidebar">
     <div class="side-brand">
       <div class="logo-wrap size-md dark-logo">
-        <video autoplay loop muted playsinline src="logo-white.webm"></video>
+        <video autoplay loop muted playsinline poster="logo-white-poster.png?v=2" src="logo-white.webm?v=2"></video>
       </div>
       <span>ROADWATCH<span style="color:#FF4A26">.AI</span></span>
     </div>
@@ -1512,7 +1512,7 @@ tr.muted td{opacity:.55}
     <header id="app-header">
       <div class="header-brand" data-action="nav" data-page="overview">
         <div class="logo-wrap size-sm light-logo">
-          <video autoplay loop muted playsinline src="logo.webm"></video>
+          <video autoplay loop muted playsinline poster="logo-poster.png?v=2" src="logo.webm?v=2"></video>
         </div>
       </div>
       <h1 id="header-title">Overview</h1>
