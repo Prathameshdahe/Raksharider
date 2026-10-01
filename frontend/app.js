@@ -446,8 +446,13 @@ function profileFromUser(user, pData) {
   return { id: user.id, email: user.email, full_name: user.user_metadata?.full_name || user.user_metadata?.name || (user.email || '').split('@')[0], role: 'citizen' };
 }
 async function fetchProfile(sb, user) {
+  // maybeSingle(): a user whose profiles row is missing gets null, not a 406 + console error.
+  // The backend creates the missing row on its first authenticated request (ensure_profile).
   let pData = null;
-  try { const { data } = await sb.from('profiles').select('*').eq('id', user.id).single(); pData = data; } catch (e) { console.warn('Profile fetch note:', e); }
+  try {
+    const { data, error } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    if (error) console.warn('Profile fetch note:', error.message); else pData = data;
+  } catch (e) { console.warn('Profile fetch note:', e); }
   return profileFromUser(user, pData);
 }
 function updateUserUI(user, profile) {
@@ -495,13 +500,54 @@ window.doLogin = async function() {
   if (btn) { btn.textContent = 'Signing in…'; btn.disabled = true; }
   try {
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) { showToast('Sign-in failed: ' + error.message); return; }
+    if (error) { await explainAuthError(sb, error, email); return; }
     const profile = await fetchProfile(sb, data.user);
     showToast(`Welcome back, ${profile.full_name || email}!`);
     _safeEnterApp(data.user, profile);
-  } catch (err) { showToast('Sign-in error: ' + err.message); }
+  } catch (err) { showToast(err.status === 0 || /failed to fetch/i.test(err.message) ? 'Could not reach the sign-in server. If this keeps happening, open /reset once to clear an old cached version.' : 'Sign-in error: ' + err.message); }
   finally { if (btn) { btn.textContent = 'Sign in'; btn.disabled = false; } }
 };
+// GoTrue answers 400 for several different reasons; say which one and what to do about it.
+async function explainAuthError(sb, error, email) {
+  const m = String(error.message || '').toLowerCase();
+  if (m.includes('email not confirmed')) {
+    const r = await sb.auth.resend({ type: 'signup', email }).catch(e => ({ error: e }));
+    showToast(r?.error ? 'Your e-mail is not confirmed yet — open the confirmation link we sent you.' : `Your e-mail is not confirmed yet — a fresh confirmation link was just sent to ${email}.`);
+  } else if (m.includes('invalid login credentials')) showToast('Wrong e-mail or password. Use "Forgot password?" below if you need a reset.');
+  else if (error.status === 429 || m.includes('rate limit')) showToast('Too many attempts — wait a minute and try again.');
+  else if (m.includes('signups not allowed') || m.includes('user banned')) showToast('This account cannot sign in: ' + error.message);
+  else showToast('Sign-in failed: ' + error.message);
+}
+window.doResendConfirmation = async function() {
+  const email = document.getElementById('login-email')?.value?.trim() || '';
+  if (!isEmail(email)) { showToast('Type your e-mail in the field above first.'); return; }
+  const sb = getSB(); if (!sb) return;
+  const { error } = await sb.auth.resend({ type: 'signup', email });
+  showToast(error ? 'Could not resend: ' + error.message : `Confirmation link sent to ${email}. It may take a minute.`);
+};
+window.doForgotPassword = async function() {
+  const email = document.getElementById('login-email')?.value?.trim() || '';
+  if (!isEmail(email)) { showToast('Type your e-mail in the field above first, then tap "Forgot password?".'); return; }
+  const sb = getSB(); if (!sb) return;
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}${window.location.pathname}` });
+  showToast(error ? 'Could not send the reset link: ' + error.message : `Password reset link sent to ${email}. Open it on this device.`);
+};
+// The reset link signs the user in and fires PASSWORD_RECOVERY; ask for the new password right away.
+function openPasswordReset() {
+  openModal(`<h3>Choose a new password</h3><p class="sub">You arrived from a password-reset link. Set a new password to finish.</p><form id="m-form">
+    <div class="field"><label>New password (min 6 characters)</label><input class="input" name="password" type="password" minlength="6" required autocomplete="new-password"></div>
+    <div class="field"><label>Repeat it</label><input class="input" name="password2" type="password" minlength="6" required autocomplete="new-password"></div>
+    <div class="modal-actions"><button class="btn" type="button" data-action="modal-close">Later</button><button class="btn btn-signal" type="submit">Save password</button></div></form>`);
+  document.getElementById('m-form').onsubmit = async e => {
+    e.preventDefault();
+    const p1 = e.target.password.value, p2 = e.target.password2.value;
+    if (p1.length < 6) { showToast('Password must be at least 6 characters'); return; }
+    if (p1 !== p2) { showToast('The two passwords do not match'); return; }
+    const { error } = await getSB().auth.updateUser({ password: p1 });
+    if (error) { showToast('Could not save the password: ' + error.message); return; }
+    closeModal(); showToast('Password updated — you are signed in.');
+  };
+}
 window.doGoogleLogin = async function() {
   const sb = getSB();
   if (!sb) { showToast('Supabase client unavailable. Please check your connection.'); return; }
@@ -1641,6 +1687,11 @@ async function initAuthSession() {
   if (!_authListenerRegistered) {
     _authListenerRegistered = true;
     sb.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'PASSWORD_RECOVERY' && session?.user) {
+        // the recovery link also signs the user in; the app shell may still be entering
+        setTimeout(openPasswordReset, 700);
+        return;
+      }
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
         hasActiveSession = true;
         const profile = await fetchProfile(sb, session.user);
