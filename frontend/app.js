@@ -679,7 +679,7 @@ function onNotification(n) {
   renderNotifs();
   showToast(n.title || 'New alert');
   if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(n.title || 'RoadWatch.AI', { body: n.body || '', icon: 'icons/icon-192.png', tag: n.id }); } catch (_) {}
+    try { new Notification(n.title || 'RoadWatch.AI', { body: n.body || '', icon: 'icons/icon-192.png?v=2', tag: n.id }); } catch (_) {}
   }
   reloadIf(['home', 'live', 'queue', 'mycases']);
 }

@@ -6,8 +6,10 @@
 <meta name="theme-color" content="#12151C">
 <meta name="description" content="AI traffic violation detection. Upload dashcam footage. A human always reviews before anything is confirmed.">
 <title>RoadWatch.AI — Safer Roads, Smarter Tomorrow</title>
-<link rel="icon" type="image/png" href="icons/favicon.png">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="64x64" href="icons/favicon.png?v=2">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png?v=2">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png?v=2">
 <!-- Supabase JS —— CDN, safe to load publicly -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -211,8 +213,7 @@ body:has(#app.active) #cursor-grid,body:has(#app.active) #landing{display:none !
 .ld-main{max-width:1180px;margin:0 auto;padding:0 16px}
 .ld-hero{display:grid;grid-template-columns:1fr;gap:28px;padding:34px 0 26px;border-bottom:1px solid var(--navy12)}
 .ld-hero-copy{display:flex;flex-direction:column;justify-content:center;min-width:0}
-.ld-mark{width:34px;height:34px;color:var(--navy);margin-bottom:18px}
-.ld-mark svg{width:100%;height:100%;display:block}
+.ld-mark{display:inline-flex;margin-bottom:18px}
 .ld-h1{font-family:'Archivo',sans-serif;font-weight:600;font-size:clamp(38px,7.2vw,76px);line-height:.98;letter-spacing:-2.2px;margin:0 0 20px;text-wrap:balance}
 .ld-lead{font-size:16px;line-height:1.6;color:var(--navy72);max-width:48ch;margin:0 0 26px}
 .ld-cta{display:flex;flex-wrap:wrap;align-items:center;gap:18px;margin-bottom:28px}
@@ -1154,7 +1155,8 @@ tr.muted td{opacity:.55}
   #bottom-nav{display:none}
   #app-body{padding-bottom:0}
   #app-header{padding:10px 32px;min-height:64px}
-  #app-header .header-brand{display:none}
+  #app-header .header-brand{display:block}
+  #app-header .header-brand .logo-wrap{width:30px;height:30px}
   #header-title{font-size:20px}
   #app-main{padding:0 32px 48px}
   #toast{bottom:32px}
@@ -1201,7 +1203,7 @@ tr.muted td{opacity:.55}
     <!-- Hero -->
     <section class="ld-hero" id="top">
       <div class="ld-hero-copy">
-        <div class="ld-mark" aria-hidden="true"><svg viewBox="0 0 34 34" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M17 2c1.2 7.6 7.4 13.8 15 15-7.6 1.2-13.8 7.4-15 15-1.2-7.6-7.4-13.8-15-15C9.6 15.8 15.8 9.6 17 2z"/></svg></div>
+        <div class="ld-mark" aria-hidden="true"><div class="logo-wrap light-logo" style="width:64px;height:64px"><video autoplay loop muted playsinline poster="logo-poster.png?v=2" src="logo.webm?v=2"></video></div></div>
         <h1 class="ld-h1">Saw dangerous driving?<br>Send the clip.<br>A person decides.</h1>
         <p class="ld-lead">RoadWatch checks dashcam and phone footage for unsafe behaviour on Indian roads. The AI reads every frame and writes a report; a trained reviewer confirms or rejects every finding.</p>
         <div class="ld-cta">
@@ -1345,7 +1347,7 @@ tr.muted td{opacity:.55}
         </div>
       </div>
       <div class="ld-cta-band">
-        <div><h2>Ready to send your first clip?</h2><p>Create an account, describe what you saw, and follow the review from upload to decision.</p></div>
+        <div style="display:flex;gap:18px;align-items:flex-start;min-width:0"><div class="logo-wrap dark-logo" style="width:56px;height:56px;flex:none;margin-top:4px"><video autoplay loop muted playsinline poster="logo-white-poster.png?v=2" src="logo-white.webm?v=2"></video></div><div><h2>Ready to send your first clip?</h2><p>Create an account, describe what you saw, and follow the review from upload to decision.</p></div></div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button class="ld-pill ld-pill-lg" type="button" onclick="openLogin('signup')">Create account</button><button class="ld-link-btn" type="button" onclick="openLogin('signin')">I already have one</button></div>
       </div>
     </section>
@@ -1355,7 +1357,7 @@ tr.muted td{opacity:.55}
   <footer class="ld-foot">
     <div class="ld-foot-in">
       <div class="ld-foot-brand">
-        <div class="ld-brand" style="cursor:default"><span class="sl">//</span>RoadWatch<span style="color:#FF4A26">.AI</span></div>
+        <div class="ld-brand" style="cursor:default"><span class="sl">//</span><div class="logo-wrap size-md light-logo"><video autoplay loop muted playsinline poster="logo-poster.png?v=2" src="logo.webm?v=2"></video></div>RoadWatch<span style="color:#FF4A26">.AI</span></div>
         <p>AI-assisted traffic-violation detection from dashcam clips. The AI finds vehicles and attaches every finding to one tracked vehicle with its own evidence; a human reviewer decides before anything counts.</p>
       </div>
       <div class="ld-foot-cols">
@@ -1555,7 +1557,7 @@ tr.muted td{opacity:.55}
 
     <main id="app-main"><div id="page" class="page active"></div></main>
     <footer id="app-foot">
-      <span>RoadWatch.AI · <span id="app-foot-version">web</span></span>
+      <span style="display:inline-flex;align-items:center;gap:8px"><span class="logo-wrap size-sm light-logo"><video autoplay loop muted playsinline poster="logo-poster.png?v=2" src="logo.webm?v=2"></video></span>RoadWatch.AI · <span id="app-foot-version">web</span></span>
       <span><span class="ld-dot wait" data-dot="backend"></span>API <span data-stat-text="backend">checking…</span> · <span class="ld-dot wait" data-dot="worker"></span>worker <span data-stat-text="worker">…</span></span>
       <span>AI recommends · Humans decide · Authorities enforce</span>
     </footer>
