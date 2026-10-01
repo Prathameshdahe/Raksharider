@@ -97,6 +97,11 @@ def _is_permission_error(e: Exception) -> bool:
     return code == "42501" or "permission denied" in text or "'code': '42501'" in text
 
 
+def _is_bare_403(e: Exception) -> bool:
+    code = str(getattr(e, "code", "") or "")
+    return code == "403" or "'code': 403" in str(e)
+
+
 def _is_key_error(e: Exception) -> bool:
     """Kong answers 401 'Invalid API key' when the service key is wrong or was rotated."""
     code = str(getattr(e, "code", "") or "")
@@ -145,6 +150,14 @@ def _run_probe() -> dict:
                     break
         if last is None:
             continue
+        if _is_bare_403(last) and not _is_permission_error(last):
+            # A HEAD response has no body, so PostgREST's SQLSTATE 42501 reaches us as a bare 403
+            # ('JSON could not be generated'). Ask once more with GET to read the real error; the
+            # row is never looked at, and a table that refuses the role returns no row anyway.
+            try:
+                health_client.table(table).select("*").limit(1).execute()
+            except Exception as e2:
+                last = e2
         if _is_permission_error(last):
             denied[table] = str(last)[:160]   # a GRANT problem is per table: keep probing the rest
             continue
