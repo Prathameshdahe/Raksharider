@@ -75,9 +75,14 @@ def root():
     return {"message": "RoadWatch.AI backend running", "version": APP_VERSION, "docs": "/docs", "health": "/health", "status": "/status"}
 
 
-# One cheap Supabase round-trip, cached, so Render's frequent health checks do not hammer the DB.
+# Cached Supabase probe, so Render's frequent health checks do not hammer the DB. It touches
+# every table the backend reads with the service role (HEAD requests, no rows) and names the
+# ones that refuse — a missing GRANT then shows up here instead of as a 500 on some route.
 _db_probe = {"at": 0.0, "result": None}
 DB_PROBE_TTL_S = 60
+CRITICAL_TABLES = ("system_settings", "audit_log", "videos", "cases", "findings", "vehicle_records",
+                   "violation_policy", "rejection_reasons", "profiles", "evidence", "escalations", "withdrawal_requests")
+GRANTS_HINT = "Run backend/database/008_service_role_grants.sql in the Supabase SQL editor"
 
 
 def probe_database(force: bool = False) -> dict:
@@ -89,11 +94,17 @@ def probe_database(force: bool = False) -> dict:
         result = {"ok": False, "error": "not configured"}
     else:
         started = time.time()
-        try:
-            supabase.table("system_settings").select("key").limit(1).execute()
-            result = {"ok": True, "latency_ms": int((time.time() - started) * 1000)}
-        except Exception as e:
-            result = {"ok": False, "error": str(e)[:200]}
+        denied = {}
+        for table in CRITICAL_TABLES:
+            try:
+                supabase.table(table).select("*", count="exact", head=True).limit(1).execute()
+            except Exception as e:
+                denied[table] = str(e)[:160]
+        result = {"ok": not denied, "latency_ms": int((time.time() - started) * 1000),
+                  "tables_checked": len(CRITICAL_TABLES), "denied": denied}
+        if denied:
+            result["error"] = f"{len(denied)} table(s) refused the service role: " + ", ".join(denied)
+            result["hint"] = GRANTS_HINT
     _db_probe["at"], _db_probe["result"] = now, result
     return {**result, "cached": False}
 
