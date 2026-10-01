@@ -24,6 +24,10 @@ class _Query:
         self.op, self.payload, self.kwargs = "upsert", row, k
         return self
 
+    def update(self, row, **k):
+        self.op, self.payload = "update", row
+        return self
+
     def eq(self, *a):
         return self
 
@@ -32,6 +36,11 @@ class _Query:
 
     def execute(self):
         self.fake.calls.append((self.table, self.op, self.payload))
+        if self.op == "update":
+            rows = self.fake.tables.get(self.table, [])
+            for r in rows:
+                r.update(self.payload)
+            return _Resp([dict(r) for r in rows])
         if self.op == "upsert":
             if self.fake.upsert_error:
                 raise RuntimeError(self.fake.upsert_error)
@@ -112,3 +121,18 @@ def test_concurrent_trigger_wins_without_overwrite(monkeypatch):
     monkeypatch.setattr(_Query, "execute", racing_execute)
     user = auth_mod.get_current_user(_creds())
     assert user["profile"]["full_name"] == "Trigger" and user["profile"]["requested_role"] == "officer"
+
+
+def test_profile_update_is_404_when_no_row_matched(monkeypatch):
+    """PostgREST answers 200 [] for an UPDATE that matched nothing; echoing the request back hid a missing row."""
+    from fastapi import HTTPException
+    from app.routes import auth as routes_auth
+    from app.schemas.auth import ProfileUpdateRequest
+    fake = FakeSupabase(CLAIMS)
+    monkeypatch.setattr(routes_auth, "supabase", fake)
+    with pytest.raises(HTTPException) as ex:
+        routes_auth.update_profile(ProfileUpdateRequest(full_name="Asha"), current_user={"id": USER})
+    assert ex.value.status_code == 404
+    fake.tables["profiles"] = [{"id": USER, "email": "rider@example.com", "full_name": "Old", "role": "citizen"}]
+    out = routes_auth.update_profile(ProfileUpdateRequest(full_name="Asha"), current_user={"id": USER})
+    assert out["data"]["full_name"] == "Asha" and out["data"]["role"] == "citizen"

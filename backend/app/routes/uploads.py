@@ -1,3 +1,4 @@
+import re
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -35,6 +36,22 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+SCHEMA_HINT = "run backend/database/009_live_schema_catchup.sql in the Supabase SQL editor"
+_CHECK_RE = re.compile(r'violates check constraint "([^"]+)"')
+
+
+def _db_error(e: Exception, prefix: str):
+    """A CHECK-constraint violation (SQLSTATE 23514) means the live schema is behind the code: an
+    operator problem with a one-file fix, not a raw error dict for the citizen to decode."""
+    text = str(e)
+    if str(getattr(e, "code", "") or "") == "23514" or "23514" in text or "violates check constraint" in text:
+        m = _CHECK_RE.search(text)
+        which = m.group(1) if m else "a check constraint"
+        return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                         f"{prefix}: the database schema is out of date ({which}) — {SCHEMA_HINT}")
+    return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"{prefix}: {e}")
+
+
 def _check_size_and_quota(user_id: str, size_bytes: int):
     if size_bytes > MAX_VIDEO_BYTES:
         raise api_error(status.HTTP_413_CONTENT_TOO_LARGE, "Video exceeds the 200 MB limit")
@@ -62,7 +79,7 @@ def _get_video(video_id: str) -> Optional[dict]:
 def user_status(video: dict, cases: list, worker_paused: Optional[bool] = None) -> str:
     """Plain words for the uploader (docs §2.6 items 20, 23)."""
     s = video.get("status")
-    if s == "processed":
+    if s in ("processed", "completed"):   # 'completed' = pre-002 rows; nothing writes it any more
         return "awaiting_review" if any(c.get("status") in OPEN_CASE for c in cases) else "decided"
     if s == "unprocessed":
         if worker_paused is None:
@@ -128,7 +145,7 @@ def init_video_upload(body: UploadInitV3Request, current_user=Depends(get_curren
         )
     except Exception as e:
         logger.exception("Failed to init video upload")
-        raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to init video upload: {e}")
+        raise _db_error(e, "Failed to init video upload")
     return {
         "success": True,
         "data": {
@@ -197,7 +214,7 @@ def complete_video_upload(body: UploadCompleteRequest, current_user=Depends(get_
         )
     except Exception as e:
         logger.exception("Failed to complete video upload")
-        raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Failed to complete video upload: {e}")
+        raise _db_error(e, "Failed to complete video upload")
     return {"success": True, "message": "Video upload completed", "data": _citizen_safe(res.data[0] if res.data else video)}
 
 

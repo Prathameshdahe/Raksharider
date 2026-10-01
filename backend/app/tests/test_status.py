@@ -31,7 +31,8 @@ class _Query:
     def execute(self):
         self.fake.calls.append((self.table, dict(self.filters), self.head))
         if self.table in self.fake.errors:
-            raise RuntimeError(self.fake.errors[self.table])
+            err = self.fake.errors[self.table]
+            raise err if isinstance(err, Exception) else RuntimeError(err)
         rows = [dict(r) for r in self.fake.tables.get(self.table, []) if all(r.get(c) == v for c, v in self.filters.items())]
         return _Resp([] if self.head else rows, count=len(rows))
 
@@ -65,6 +66,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(status_mod, "missing_env", lambda: [])
     import app.database.supabase as dbmod
     monkeypatch.setattr(dbmod, "supabase", fs)
+    monkeypatch.setattr(dbmod, "health_client", fs)
     monkeypatch.setattr(dbmod, "missing_env", lambda: [])
     status_mod._cache.update({"at": 0.0, "data": None})
     main_mod._db_probe.update({"at": 0.0, "result": None})
@@ -178,3 +180,72 @@ def test_keepalive_target_prefers_explicit_url(monkeypatch):
     assert keepalive.target_url() == "https://custom.example/health?deep=1"
     monkeypatch.setenv("KEEPALIVE_ENABLED", "0")
     assert keepalive.enabled() is False
+
+
+class _ApiError(Exception):
+    """Shape of postgrest.APIError: a `.code` plus the dict repr as the message."""
+
+    def __init__(self, code, message):
+        super().__init__(str({"message": message, "code": code}))
+        self.code = str(code)
+
+
+def test_health_deep_stops_after_the_first_connection_failure(fake, client):
+    """A refused connection or timeout hits every table alike: probe it twice, then skip the rest."""
+    fake.errors["system_settings"] = "Server disconnected"
+    db = client.get("/health?deep=1").json()["database"]
+    assert db["ok"] is False and set(db["errors"]) == {"system_settings"} and db["denied"] == {}
+    assert db["tables_checked"] == 1
+    assert db["skipped"] == list(main_mod.CRITICAL_TABLES[1:])
+    assert [t for t, _, head in fake.calls if head] == ["system_settings", "system_settings"]
+    assert "hint" not in db
+
+
+def test_health_deep_keeps_probing_after_a_denied_table(fake, client):
+    fake.errors["system_settings"] = "permission denied for table system_settings"
+    db = client.get("/health?deep=1").json()["database"]
+    assert set(db["denied"]) == {"system_settings"} and db["errors"] == {}
+    assert db["tables_checked"] == len(main_mod.CRITICAL_TABLES) and "skipped" not in db
+
+
+def test_health_deep_bare_403_is_not_a_missing_grant(fake, client):
+    """A gateway or WAF 403 must not tell the operator to re-run 008."""
+    fake.errors["system_settings"] = _ApiError(403, "Forbidden")
+    db = client.get("/health?deep=1").json()["database"]
+    assert db["denied"] == {} and set(db["errors"]) == {"system_settings"}
+    assert "008_service_role_grants" not in db.get("hint", "")
+
+
+def test_health_deep_sqlstate_42501_is_a_missing_grant(fake, client):
+    fake.errors["audit_log"] = _ApiError("42501", "permission denied for table audit_log")
+    db = client.get("/health?deep=1").json()["database"]
+    assert set(db["denied"]) == {"audit_log"} and "008_service_role_grants" in db["hint"]
+
+
+def test_health_deep_names_a_rejected_service_key(fake, client):
+    fake.errors["system_settings"] = _ApiError(401, "Invalid API key")
+    db = client.get("/health?deep=1").json()["database"]
+    assert db["denied"] == {} and "system_settings" in db["errors"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" in db["hint"]
+    assert sum(1 for t, _, head in fake.calls if head) == 1   # no retry: the key will not change between attempts
+
+
+def test_health_deep_probe_is_shared_under_a_lock(fake, client, monkeypatch):
+    """Two concurrent deep health calls run one probe, not two."""
+    import threading
+    import time as _time
+    original, runs, results = main_mod._run_probe, [], []
+
+    def slow_probe():
+        runs.append(1)
+        _time.sleep(0.3)
+        return original()
+
+    monkeypatch.setattr(main_mod, "_run_probe", slow_probe)
+    threads = [threading.Thread(target=lambda: results.append(client.get("/health?deep=1").json()["database"])) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert len(runs) == 1 and len(results) == 2
+    assert sorted(r["cached"] for r in results) == [False, True]
