@@ -30,6 +30,8 @@ class _Query:
 
     def execute(self):
         self.fake.calls.append((self.table, dict(self.filters), self.head))
+        if self.table in self.fake.errors:
+            raise RuntimeError(self.fake.errors[self.table])
         rows = [dict(r) for r in self.fake.tables.get(self.table, []) if all(r.get(c) == v for c, v in self.filters.items())]
         return _Resp([] if self.head else rows, count=len(rows))
 
@@ -47,7 +49,7 @@ class _Rpc:
 
 class FakeSupabase:
     def __init__(self):
-        self.tables, self.calls, self.rpc_calls, self.rpc_errors = {}, [], [], {}
+        self.tables, self.calls, self.rpc_calls, self.rpc_errors, self.errors = {}, [], [], {}, {}
 
     def table(self, name):
         return _Query(self, name)
@@ -118,8 +120,25 @@ def test_health_deep_probes_database(fake, client):
     shallow = client.get("/health").json()
     assert shallow["status"] == "healthy" and "database" not in shallow and "keepalive" in shallow
     deep = client.get("/health?deep=1").json()
+    assert deep["status"] == "healthy"
     assert deep["database"]["ok"] is True and deep["database"]["cached"] is False
+    assert deep["database"]["denied"] == {} and deep["database"]["tables_checked"] == len(main_mod.CRITICAL_TABLES)
+    # every critical table is probed with a HEAD request: no row data for a health check
+    probed = {t for t, _, head in fake.calls if head}
+    assert set(main_mod.CRITICAL_TABLES) <= probed
     assert client.get("/health?deep=1").json()["database"]["cached"] is True
+
+
+def test_health_deep_names_tables_the_service_role_cannot_read(fake, client):
+    fake.errors["system_settings"] = "permission denied for table system_settings"
+    fake.errors["audit_log"] = "permission denied for table audit_log"
+    deep = client.get("/health?deep=1").json()
+    assert deep["status"] == "degraded"
+    db = deep["database"]
+    assert db["ok"] is False
+    assert set(db["denied"]) == {"system_settings", "audit_log"}
+    assert "008_service_role_grants.sql" in db["hint"]
+    assert "2 table(s)" in db["error"]
 
 
 def test_keepalive_tick_survives_failures(fake, monkeypatch):
