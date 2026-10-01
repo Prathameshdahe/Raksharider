@@ -15,6 +15,7 @@ from app.routes.plates import router as plates_router
 from app.routes.evidence import router as evidence_router
 from app.routes.status import router as status_router
 from app.services import keepalive
+from app.database.supabase import env_float
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
 logger = logging.getLogger("app")
@@ -82,7 +83,7 @@ def root():
 _db_probe = {"at": 0.0, "result": None}
 _db_probe_lock = threading.Lock()
 DB_PROBE_TTL_S = 60
-DB_PROBE_BUDGET_S = float(os.environ.get("DB_PROBE_BUDGET_S", "8"))   # wall-clock cap for one probe
+DB_PROBE_BUDGET_S = env_float("DB_PROBE_BUDGET_S", 8.0)   # checked between tables: worst case ≈ budget + 2 × DB_PROBE_TIMEOUT_S
 CRITICAL_TABLES = ("system_settings", "audit_log", "videos", "cases", "findings", "vehicle_records",
                    "violation_policy", "rejection_reasons", "profiles", "evidence", "escalations", "withdrawal_requests")
 GRANTS_HINT = "Run backend/database/008_service_role_grants.sql in the Supabase SQL editor"
@@ -116,12 +117,22 @@ def probe_database(force: bool = False) -> dict:
     cached = fresh()
     if cached is not None:
         return {**cached, "cached": True}
-    with _db_probe_lock:                 # Render, GitHub and the keep-alive thread share one probe
+    # One probe at a time. A caller that finds a probe in flight takes the previous result (marked
+    # stale) instead of queueing on the lock, so a stalled database cannot pin the thread pool
+    # with health checks; only the very first probe of the process makes callers wait.
+    if not _db_probe_lock.acquire(blocking=False):
+        stale = _db_probe["result"]
+        if stale is not None and not force:
+            return {**stale, "cached": True, "stale": True}
+        _db_probe_lock.acquire()
+    try:
         cached = fresh()
         if cached is not None:
             return {**cached, "cached": True}
         result = _run_probe()
         _db_probe["at"], _db_probe["result"] = time.time(), result   # stamped AFTER the probe, so the TTL is real
+    finally:
+        _db_probe_lock.release()
     return {**result, "cached": False}
 
 
@@ -166,7 +177,8 @@ def _run_probe() -> dict:
         # a connection failure, timeout or gateway block hits every table alike: stop paying for it
         skipped.extend(CRITICAL_TABLES[i + 1:])
         break
-    result = {"ok": not denied and not errors, "latency_ms": int((time.time() - started) * 1000),
+    # tables skipped for budget were never checked: a 'healthy' verdict would be a guess
+    result = {"ok": not denied and not errors and not skipped, "latency_ms": int((time.time() - started) * 1000),
               "tables_checked": checked, "denied": denied, "errors": errors}
     if skipped:
         result["skipped"] = skipped
@@ -177,6 +189,8 @@ def _run_probe() -> dict:
         result["error"] = f"{len(errors)} table(s) could not be reached: " + ", ".join(errors)
         if key_rejected:
             result["hint"] = KEY_HINT
+    elif skipped:
+        result["error"] = f"probe stopped after {checked} of {len(CRITICAL_TABLES)} tables (budget {DB_PROBE_BUDGET_S:g} s): the database is slow"
     return result
 
 

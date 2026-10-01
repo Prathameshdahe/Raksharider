@@ -520,3 +520,42 @@ def test_user_status_maps_legacy_completed_rows(client):
     from app.routes.uploads import user_status
     assert user_status({"status": "completed"}, []) == "decided"
     assert user_status({"status": "completed"}, [{"status": "pending_review"}]) == "awaiting_review"
+
+
+def test_init_declared_violation_lookup_denied_names_the_grant(client, monkeypatch):
+    """Live until 008 runs: violation_policy refuses the service role (42501). The citizen must get the
+    JSON error envelope with the 008 hint, not an unhandled exception."""
+    fake, as_role = client
+
+    class _Denied(Exception):
+        code = "42501"
+
+    orig_table = fake.table
+
+    def table(name):
+        q = orig_table(name)
+        if name == "violation_policy":
+            q.execute = lambda: (_ for _ in ()).throw(_Denied("{'message': 'permission denied for table violation_policy', 'code': '42501'}"))
+        return q
+
+    monkeypatch.setattr(fake, "table", table)
+    r = as_role("citizen").post("/videos/upload/init", json={**INIT, "declared_violation": "no_helmet"})
+    assert r.status_code == 500
+    err = r.json()["detail"]["error"]
+    assert "008_service_role_grants.sql" in err and "Could not check the declared violation" in err
+
+
+def test_db_error_never_forwards_the_raw_error_dict():
+    """A 23503 / 23502 detail carries the failing row (blob_url, local_path, error_reason): keep it server-side."""
+    from fastapi import HTTPException
+    from app.routes.uploads import _db_error
+
+    class _Pg(Exception):
+        code = "23503"
+
+    raw = "{'code': '23503', 'details': 'Key (uploaded_by)=(x) is not present; blob_url=https://secret/signed', 'message': 'fk'}"
+    err = _db_error(_Pg(raw), "Failed to init video upload")
+    assert isinstance(err, HTTPException) and err.status_code == 500
+    assert err.detail["error"] == "Failed to init video upload (database error 23503)"
+    bare = _db_error(RuntimeError(raw), "Failed to init video upload")
+    assert bare.detail["error"] == "Failed to init video upload (database error 23503)"

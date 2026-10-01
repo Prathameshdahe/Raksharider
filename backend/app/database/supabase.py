@@ -58,7 +58,21 @@ class _LazySupabase:
 
 supabase = _LazySupabase()
 
+def env_float(name: str, default: float) -> float:
+    """A positive float from the environment, else the default. A typo in a Render variable must
+    not stop the service from booting (the module docstring's contract); 0 or negative means
+    "unset" too, so the health client never silently falls back to the library's long default."""
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 # Health probes only: same key, short timeout, so a stalled database answers "unreachable" in
 # seconds instead of holding a request thread for the library default.
-DB_PROBE_TIMEOUT_S = float(os.environ.get("DB_PROBE_TIMEOUT_S", "6"))
+DB_PROBE_TIMEOUT_S = env_float("DB_PROBE_TIMEOUT_S", 6.0)
 health_client = _LazySupabase(timeout=DB_PROBE_TIMEOUT_S)

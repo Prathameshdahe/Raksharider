@@ -18,7 +18,11 @@
      (Clear-Site-Data header in vercel.json) are the two other escape hatches. -->
 <script>
 (function () {
-  if (!('serviceWorker' in navigator)) return;
+  // /reset exists only to deliver the Clear-Site-Data header. Never stay on it: a Google or
+  // reset-link sign-in that landed here would have its fresh session wiped on arrival.
+  var onReset = location.pathname === '/reset' || location.pathname === '/reset/';
+  var home = '/' + location.search + location.hash;
+  if (!('serviceWorker' in navigator)) { if (onReset) location.replace(home); return; }
   var controlled = !!navigator.serviceWorker.controller;
   var done = Promise.resolve();
   try {
@@ -28,9 +32,7 @@
       .then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); });
   } catch (e) {}
   done.catch(function () {}).then(function () {
-    // /reset exists only to deliver the Clear-Site-Data header. Never stay on it: a Google or
-    // reset-link sign-in that landed here would have its fresh session wiped on arrival.
-    if (location.pathname === '/reset' || location.pathname === '/reset/') { location.replace('/' + location.search + location.hash); return; }
+    if (onReset) { location.replace(home); return; }
     var purged = false;
     try { purged = !!sessionStorage.getItem('rw-sw-purged'); } catch (e) {}
     if (controlled && !purged) {

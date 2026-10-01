@@ -492,6 +492,7 @@ window.doSignUp = async function() {
   const wantsOfficer = !!document.getElementById('signup-officer')?.checked;
   const badge = wantsOfficer ? (document.getElementById('signup-badge')?.value.trim() || '') : null;
   const btn = document.getElementById('btn-submit-signup');
+  if (btn?.disabled) return;
   if (!email || !password) { showAuthAlert('signup', 'Please enter an email and password.'); return; }
   if (!isEmail(email)) { showAuthAlert('signup', 'Please enter a valid email address.'); return; }
   if (password.length < 6) { showAuthAlert('signup', 'Password must be at least 6 characters.'); return; }
@@ -537,6 +538,7 @@ window.doLogin = async function() {
   const email = document.getElementById('login-email')?.value?.trim() || '';
   const password = document.getElementById('login-pw')?.value || '';
   const btn = document.getElementById('btn-submit-signin');
+  if (btn?.disabled) return;   // Enter in the password field must respect the in-flight / cooldown state
   if (!email || !password) { showAuthAlert('signin', 'Please enter your email and password.'); return; }
   const sb = getSB();
   if (!sb) { showAuthAlert('signin', 'Supabase client unavailable. Please check your connection.'); return; }
@@ -571,7 +573,7 @@ function authReturnUrl() { return window.location.origin + '/'; }
 function authErrorMessage(error, email) {
   const code = String(error?.code || '').toLowerCase();
   const m = String(error?.message || '').toLowerCase();
-  const status = Number(error?.status || 0);
+  const status = typeof error?.status === 'number' ? error.status : null;   // 0 = real fetch failure; absent = not a network error
   const who = email ? ` (${email})` : '';
   if (code === 'email_not_confirmed' || m.includes('email not confirmed'))
     return { code: 'email_not_confirmed', action: 'resend', text: `Your e-mail${who} is not confirmed yet. Open the confirmation link in your inbox (check spam too), or request a new one.` };
