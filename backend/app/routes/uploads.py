@@ -37,19 +37,30 @@ def _now():
 
 
 SCHEMA_HINT = "run backend/database/009_live_schema_catchup.sql in the Supabase SQL editor"
+GRANTS_HINT = "run backend/database/008_service_role_grants.sql in the Supabase SQL editor"
 _CHECK_RE = re.compile(r'violates check constraint "([^"]+)"')
+_CODE_RE = re.compile(r"'code':\s*'?([0-9A-Z]{5})'?")
 
 
 def _db_error(e: Exception, prefix: str):
-    """A CHECK-constraint violation (SQLSTATE 23514) means the live schema is behind the code: an
-    operator problem with a one-file fix, not a raw error dict for the citizen to decode."""
+    """Database failures here are operator problems with a one-file fix: a CHECK constraint the
+    live schema lacks (SQLSTATE 23514 → 009) or a missing GRANT (42501 → 008). Say which. Never
+    forward PostgREST's error dict: its 'details' carries the failing row, i.e. storage paths,
+    signed URLs and internal failure text that _citizen_safe exists to strip."""
     text = str(e)
-    if str(getattr(e, "code", "") or "") == "23514" or "23514" in text or "violates check constraint" in text:
+    code = str(getattr(e, "code", "") or "")
+    if not code:
+        m = _CODE_RE.search(text)
+        code = m.group(1) if m else ""
+    if code == "23514" or "violates check constraint" in text:
         m = _CHECK_RE.search(text)
         which = m.group(1) if m else "a check constraint"
         return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR,
                          f"{prefix}: the database schema is out of date ({which}) — {SCHEMA_HINT}")
-    return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"{prefix}: {e}")
+    if code == "42501" or "permission denied" in text.lower():
+        return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                         f"{prefix}: the backend's database role lacks a grant — {GRANTS_HINT}")
+    return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, f"{prefix} (database error {code or 'unknown'})")
 
 
 def _check_size_and_quota(user_id: str, size_bytes: int):
@@ -111,7 +122,11 @@ def _validate_claim(body: UploadInitV3Request) -> dict:
         raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, "claimed_plate is not a valid Indian registration (e.g. MH12AB1234)")
     priority = 0
     if body.declared_violation:
-        rows = supabase.table("violation_policy").select("violation_type, tier, two_wheeler, four_wheeler").eq("violation_type", body.declared_violation).limit(1).execute().data or []
+        try:
+            rows = supabase.table("violation_policy").select("violation_type, tier, two_wheeler, four_wheeler").eq("violation_type", body.declared_violation).limit(1).execute().data or []
+        except Exception as e:   # live today: 42501 until 008 runs; must not surface as a bare text/plain 500
+            logger.exception("violation_policy lookup failed")
+            raise _db_error(e, "Could not check the declared violation")
         pol = next((r for r in rows if r.get("violation_type") == body.declared_violation), None)
         if not pol or not pol.get(body.vehicle_type):
             raise api_error(status.HTTP_422_UNPROCESSABLE_ENTITY, f"declared_violation '{body.declared_violation}' is not reportable for a {body.vehicle_type}")

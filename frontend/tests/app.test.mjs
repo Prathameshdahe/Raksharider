@@ -126,5 +126,19 @@ assert.match(src, /\.eq\('id', user\.id\)\.maybeSingle\(\)/);
 assert.match(src, /completed: 'decided'/);
 // an existing address re-registering is told so (GoTrue returns a user with no identities)
 assert.match(src, /data\.user\.identities\.length === 0/);
+// an error without a numeric status (URL-borne, thrown) is NOT a network failure
+assert.equal(authErrorMessage({ code: 'unexpected_failure', message: 'Database error saving new user' }).code, 'unexpected_failure');
+assert.doesNotMatch(authErrorMessage({ message: 'Cannot read properties of undefined' }).text, /\/reset/);
+assert.equal(authErrorMessage({ status: 0, message: 'Failed to fetch' }).code, 'network', 'a real fetch failure still is');
+// Enter in the password field respects the in-flight / cooldown state
+assert.match(src, /btn-submit-signin'\);\s*if \(btn\?\.disabled\) return;/);
+assert.match(src, /btn-submit-signup'\);\s*if \(btn\?\.disabled\) return;/);
+// index.html: /reset bounces even in browsers without service-worker support; sw.js never claims healthy tabs
+const html = fs.readFileSync(path.join(here, '..', 'index.html'), 'utf8');
+assert.ok(html.indexOf("if (!('serviceWorker' in navigator)) { if (onReset) location.replace(home); return; }") > 0, '/reset must bounce without a service worker too');
+assert.ok(html.indexOf('if (onReset) { location.replace(home); return; }') > 0, '/reset bounces after the cache purge');
+const sw = fs.readFileSync(path.join(here, '..', 'sw.js'), 'utf8');
+assert.doesNotMatch(sw, /clients\.claim/, 'the cleanup worker must not seize and reload healthy uncontrolled tabs');
+assert.match(sw, /registration\.unregister\(\)[\s\S]*matchAll/, 'unregister before navigating the old tabs');
 
 console.log('frontend/app.js — all checks passed');

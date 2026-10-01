@@ -265,3 +265,49 @@ def test_health_deep_reads_the_real_error_behind_a_head_403(fake, client):
     assert db["tables_checked"] == len(main_mod.CRITICAL_TABLES) and "skipped" not in db
     gets = [t for t, _, head in fake.calls if t == "system_settings" and not head]
     assert len(gets) == 1   # exactly one confirming GET
+
+
+def test_health_deep_budget_exhaustion_is_degraded_not_healthy(fake, client, monkeypatch):
+    """Tables skipped for budget were never checked; reporting 'healthy' would hide a missing grant."""
+    monkeypatch.setattr(main_mod, "DB_PROBE_BUDGET_S", -1)
+    deep = client.get("/health?deep=1").json()
+    db = deep["database"]
+    assert deep["status"] == "degraded" and db["ok"] is False
+    assert db["tables_checked"] == 0 and db["skipped"] == list(main_mod.CRITICAL_TABLES)
+    assert "budget" in db["error"] and "hint" not in db
+
+
+def test_health_deep_in_flight_probe_serves_the_previous_result(fake, client, monkeypatch):
+    """A caller that finds a probe in flight must not queue on the lock while a stalled DB answers."""
+    import threading
+    import time as _time
+    main_mod._db_probe.update({"at": 0.0, "result": {"ok": True, "tables_checked": 12, "denied": {}, "errors": {}, "latency_ms": 1}})
+    original = main_mod._run_probe
+
+    def slow_probe():
+        _time.sleep(0.6)
+        return original()
+
+    monkeypatch.setattr(main_mod, "_run_probe", slow_probe)
+    first = []
+    t = threading.Thread(target=lambda: first.append(client.get("/health?deep=1").json()["database"]))
+    t.start()
+    _time.sleep(0.15)
+    started = _time.time()
+    second = client.get("/health?deep=1").json()["database"]
+    assert _time.time() - started < 0.4, "the second caller must not wait for the slow probe"
+    assert second["cached"] is True and second["stale"] is True
+    t.join(5)
+    assert first and first[0]["cached"] is False
+
+
+def test_env_float_never_breaks_boot(monkeypatch):
+    from app.database.supabase import env_float
+    monkeypatch.setenv("X_PROBE", "6s")
+    assert env_float("X_PROBE", 6.0) == 6.0
+    monkeypatch.setenv("X_PROBE", "0")
+    assert env_float("X_PROBE", 6.0) == 6.0
+    monkeypatch.setenv("X_PROBE", "2.5")
+    assert env_float("X_PROBE", 6.0) == 2.5
+    monkeypatch.delenv("X_PROBE")
+    assert env_float("X_PROBE", 6.0) == 6.0
