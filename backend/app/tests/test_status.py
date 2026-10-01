@@ -32,7 +32,10 @@ class _Query:
         self.fake.calls.append((self.table, dict(self.filters), self.head))
         if self.table in self.fake.errors:
             err = self.fake.errors[self.table]
-            raise err if isinstance(err, Exception) else RuntimeError(err)
+            if callable(err):
+                err = err(self.head)          # per-request shape: HEAD vs GET
+            if err is not None:
+                raise err if isinstance(err, Exception) else RuntimeError(err)
         rows = [dict(r) for r in self.fake.tables.get(self.table, []) if all(r.get(c) == v for c, v in self.filters.items())]
         return _Resp([] if self.head else rows, count=len(rows))
 
@@ -249,3 +252,16 @@ def test_health_deep_probe_is_shared_under_a_lock(fake, client, monkeypatch):
         t.join(10)
     assert len(runs) == 1 and len(results) == 2
     assert sorted(r["cached"] for r in results) == [False, True]
+
+
+def test_health_deep_reads_the_real_error_behind_a_head_403(fake, client):
+    """Live PostgREST: a HEAD on a table the role cannot read is a bare 403 with no body
+    ('JSON could not be generated'); the GET carries SQLSTATE 42501. Must still count as denied."""
+    fake.errors["system_settings"] = lambda head: (_ApiError(403, "JSON could not be generated") if head
+                                                   else _ApiError("42501", "permission denied for table system_settings"))
+    db = client.get("/health?deep=1").json()["database"]
+    assert set(db["denied"]) == {"system_settings"} and db["errors"] == {}
+    assert "008_service_role_grants" in db["hint"]
+    assert db["tables_checked"] == len(main_mod.CRITICAL_TABLES) and "skipped" not in db
+    gets = [t for t, _, head in fake.calls if t == "system_settings" and not head]
+    assert len(gets) == 1   # exactly one confirming GET
