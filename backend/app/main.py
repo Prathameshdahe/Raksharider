@@ -85,6 +85,13 @@ CRITICAL_TABLES = ("system_settings", "audit_log", "videos", "cases", "findings"
 GRANTS_HINT = "Run backend/database/008_service_role_grants.sql in the Supabase SQL editor"
 
 
+def _is_permission_error(e: Exception) -> bool:
+    """PostgREST surfaces a missing GRANT as HTTP 403 / SQLSTATE 42501 / 'permission denied'."""
+    code = str(getattr(e, "code", "") or "")
+    text = str(e).lower()
+    return code in ("403", "42501") or "permission denied" in text or "'code': 403" in text
+
+
 def probe_database(force: bool = False) -> dict:
     now = time.time()
     if _db_probe["result"] is not None and (now - _db_probe["at"]) < DB_PROBE_TTL_S and not force:
@@ -94,17 +101,27 @@ def probe_database(force: bool = False) -> dict:
         result = {"ok": False, "error": "not configured"}
     else:
         started = time.time()
-        denied = {}
+        denied, errors = {}, {}
         for table in CRITICAL_TABLES:
-            try:
-                supabase.table(table).select("*", count="exact", head=True).limit(1).execute()
-            except Exception as e:
-                denied[table] = str(e)[:160]
-        result = {"ok": not denied, "latency_ms": int((time.time() - started) * 1000),
-                  "tables_checked": len(CRITICAL_TABLES), "denied": denied}
+            last = None
+            for attempt in (1, 2):   # one retry: a cold instance drops the odd connection on its first requests
+                try:
+                    supabase.table(table).select("*", count="exact", head=True).limit(1).execute()
+                    last = None
+                    break
+                except Exception as e:
+                    last = e
+                    if _is_permission_error(e):
+                        break
+            if last is not None:
+                (denied if _is_permission_error(last) else errors)[table] = str(last)[:160]
+        result = {"ok": not denied and not errors, "latency_ms": int((time.time() - started) * 1000),
+                  "tables_checked": len(CRITICAL_TABLES), "denied": denied, "errors": errors}
         if denied:
             result["error"] = f"{len(denied)} table(s) refused the service role: " + ", ".join(denied)
             result["hint"] = GRANTS_HINT
+        elif errors:
+            result["error"] = f"{len(errors)} table(s) could not be reached: " + ", ".join(errors)
     _db_probe["at"], _db_probe["result"] = now, result
     return {**result, "cached": False}
 

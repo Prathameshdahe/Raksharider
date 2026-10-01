@@ -137,8 +137,20 @@ def test_health_deep_names_tables_the_service_role_cannot_read(fake, client):
     db = deep["database"]
     assert db["ok"] is False
     assert set(db["denied"]) == {"system_settings", "audit_log"}
+    assert db["errors"] == {}
     assert "008_service_role_grants.sql" in db["hint"]
     assert "2 table(s)" in db["error"]
+
+
+def test_health_deep_separates_transient_errors_from_denials(fake, client):
+    fake.errors["escalations"] = "Server disconnected"
+    deep = client.get("/health?deep=1").json()
+    db = deep["database"]
+    assert deep["status"] == "degraded" and db["ok"] is False
+    assert db["denied"] == {} and set(db["errors"]) == {"escalations"}
+    assert "hint" not in db and "could not be reached" in db["error"]
+    # a transient failure is retried once before it is reported
+    assert sum(1 for t, _, head in fake.calls if t == "escalations" and head) == 2
 
 
 def test_keepalive_tick_survives_failures(fake, monkeypatch):
