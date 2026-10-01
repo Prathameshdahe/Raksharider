@@ -69,4 +69,8 @@ def update_profile(payload: ProfileUpdateRequest, current_user=Depends(get_curre
     except Exception as e:
         logger.error("[auth] Update profile failed: %s", e)
         raise api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, "Profile update failed")
-    return {"success": True, "data": res.data[0] if res.data else update_data}
+    if not res.data:
+        # An UPDATE that matched no row is a 200 with [] under PostgREST; echoing the request back
+        # would hide a missing profiles row (see ensure_profile / migration 009).
+        raise api_error(status.HTTP_404_NOT_FOUND, "Profile not found")
+    return {"success": True, "data": res.data[0]}

@@ -87,4 +87,44 @@ assert.match(src, /post\(\{ accept: true \}\)/, 'F8: accept posts {accept: true}
 assert.match(src, /post\(\{ accept: false, reason \}\)/, 'F8: decline posts {accept: false, reason}');
 assert.match(src, /'wr-accept'|'wr-decline'/, 'F8: both buttons are wired to the click dispatcher');
 
+// ── Auth errors are keyed on GoTrue error codes; message text is only a fallback ──
+const { authErrorMessage, authErrorFromUrl } = ctx;
+assert.equal(authErrorMessage({ code: 'email_not_confirmed', message: 'Email not confirmed', status: 400 }).action, 'resend');
+assert.equal(authErrorMessage({ message: 'Email not confirmed' }).code, 'email_not_confirmed', 'a response without a code still classifies');
+const bad = authErrorMessage({ code: 'invalid_credentials', message: 'Invalid login credentials', status: 400 });
+assert.equal(bad.code, 'invalid_credentials');
+assert.equal(bad.action, 'forgot');
+assert.match(bad.text, /Google/, 'a Google-created account has no password and gets the same 400');
+assert.equal(authErrorMessage({ code: 'over_email_send_rate_limit', message: 'For security purposes, you can only request this after 42 seconds.', status: 429 }).code, 'over_email_send_rate_limit');
+assert.equal(authErrorMessage({ status: 429, message: 'Request rate limit reached' }).code, 'over_request_rate_limit');
+assert.match(authErrorMessage({ message: 'Email address "x@y.z" is not authorized' }).text, /SMTP/, 'the built-in mailer refusal points at the owner');
+assert.equal(authErrorMessage({ status: 0, message: 'Failed to fetch' }).code, 'network');
+assert.match(authErrorMessage({ status: 0, message: 'Failed to fetch' }).text, /\/reset/);
+assert.equal(authErrorMessage({ code: 'weak_password', message: 'Password should be at least 6 characters.' }).text, 'Password should be at least 6 characters.');
+assert.equal(authErrorMessage({ code: 'same_password', message: 'New password should be different from the old password.' }).code, 'same_password');
+assert.equal(authErrorMessage({ code: 'user_banned', message: 'User is banned' }).action, null);
+// (objects born inside the vm context carry its own Object prototype, so compare by value)
+assert.deepEqual(JSON.parse(JSON.stringify(authErrorFromUrl('#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired', ''))),
+  { error: 'access_denied', code: 'otp_expired', message: 'Email link is invalid or has expired' });
+assert.equal(authErrorFromUrl('#access_token=abc&type=recovery', ''), null);
+assert.equal(authErrorFromUrl('#queue', ''), null, 'ordinary hash routes are not errors');
+assert.equal(authErrorFromUrl('', '?error=server_error&error_description=Unable+to+exchange').message, 'Unable to exchange');
+// every e-mail / OAuth link returns to the site root: never pathname (index.html#admin) and never /reset
+assert.doesNotMatch(src, /\$\{window\.location\.origin\}\$\{window\.location\.pathname\}/, 'auth links must land on the site root');
+assert.match(src, /signInWithOAuth\(\{ provider: 'google', options: \{ redirectTo: authReturnUrl\(\) \} \}\)/);
+assert.match(src, /resetPasswordForEmail\(email, \{ redirectTo: authReturnUrl\(\) \}\)/);
+assert.match(src, /signUp\(\{\s*email, password,\s*options: \{ emailRedirectTo: authReturnUrl\(\)/);
+// a failed login never sends mail (built-in mailer: 2 e-mails/hour for the whole project)
+const explainBody = src.slice(src.indexOf('function explainAuthError'), src.indexOf('window.doResendConfirmation'));
+assert.doesNotMatch(explainBody, /auth\.resend|resetPasswordForEmail/, 'no mail as a side effect of a failed login');
+// the recovery dialog is opened by the shell, never by a timer racing it, and survives the first route()
+assert.doesNotMatch(src, /setTimeout\(openPasswordReset/, 'a timer raced the shell and route() destroyed the hidden dialog');
+assert.match(src, /route\(\);\s*if \(pendingPasswordReset\) openPasswordReset\(\);/, 'initApp opens the pending dialog after the first route()');
+assert.match(src, /if \(keepModalOnRoute\) keepModalOnRoute = false; else closeModal\(\);/, 'route() keeps the freshly opened recovery dialog once');
+// the profile read tolerates a missing row; legacy pre-002 rows never print a raw status
+assert.match(src, /\.eq\('id', user\.id\)\.maybeSingle\(\)/);
+assert.match(src, /completed: 'decided'/);
+// an existing address re-registering is told so (GoTrue returns a user with no identities)
+assert.match(src, /data\.user\.identities\.length === 0/);
+
 console.log('frontend/app.js — all checks passed');

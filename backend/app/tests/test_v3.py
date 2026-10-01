@@ -492,3 +492,31 @@ def test_user_status_intake_paused_and_processing_delayed():
     assert user_status({"status": "processing", "uploaded_at": recent_time}, []) == "analysing"
 
 
+def test_init_names_schema_drift_instead_of_a_raw_500(client, monkeypatch):
+    """Live videos_status_check still lacked 'uploading' (1 Oct): the citizen saw the raw PostgREST dict.
+    A CHECK violation is an operator problem: name the constraint and the migration, hide the row."""
+    _, as_role = client
+    monkeypatch.setattr(storage_service.StorageService, "create_signed_upload_url",
+                        staticmethod(lambda fn: {"storage_path": "x.mp4", "upload_url": "https://up"}))
+
+    class _Pg(Exception):
+        code = "23514"
+
+    def refuse(**kw):
+        raise _Pg(str({"message": 'new row for relation "videos" violates check constraint "videos_status_check"',
+                       "code": "23514", "details": "Failing row contains (bda765c1, sample.mp4, ...)"}))
+
+    from app.services.video_service import VideoService
+    monkeypatch.setattr(VideoService, "create_video_record", staticmethod(refuse))
+    r = as_role("citizen").post("/videos/upload/init", json=INIT)
+    assert r.status_code == 500
+    err = r.json()["detail"]["error"]
+    assert "videos_status_check" in err and "009_live_schema_catchup.sql" in err
+    assert "Failing row" not in err
+
+
+def test_user_status_maps_legacy_completed_rows(client):
+    """Pre-002 rows carry status 'completed'; they must read like a processed clip, never a raw value."""
+    from app.routes.uploads import user_status
+    assert user_status({"status": "completed"}, []) == "decided"
+    assert user_status({"status": "completed"}, [{"status": "pending_review"}]) == "awaiting_review"

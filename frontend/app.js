@@ -56,7 +56,7 @@ const TIER_LABEL = { top: 'Top', middle: 'Middle', minor: 'Minor' };
 const REJECTION_FALLBACK = { helmet_worn: 'Helmet actually worn', wrong_vehicle: 'Wrong vehicle identified', plate_misread: 'Plate misread', footage_unclear: 'Footage too unclear', not_a_violation: 'Not a violation', duplicate_case: 'Duplicate of another case', other: 'Other' };
 const PLATE_RE = /^([A-Z]{2}[0-9]{1,2}[A-Z]{0,3}[0-9]{4}|[0-9]{2}BH[0-9]{4}[A-Z]{1,2})$/;
 const USER_STATUS = { uploading: 'Uploading', queued: 'Queued', analysing: 'Analysing', awaiting_review: 'Awaiting review', decided: 'Decided', withdrawn: 'Withdrawn', could_not_process: 'Could not process' };
-const RAW_TO_USER = { uploading: 'uploading', unprocessed: 'queued', processing: 'analysing', processed: 'awaiting_review', failed: 'could_not_process', withdrawn: 'withdrawn' };
+const RAW_TO_USER = { uploading: 'uploading', unprocessed: 'queued', processing: 'analysing', processed: 'awaiting_review', completed: 'decided', failed: 'could_not_process', withdrawn: 'withdrawn' };
 
 // ══════════════════════════════════════════════════════════
 // ── Helpers ───────────────────────────────────────────────
@@ -393,6 +393,23 @@ window.closeLogin = function() { showLanding(); };
 // ── Splash flow ────────────────────────────────────────────
 let hasActiveSession = hasSavedSupabaseSession() || !!PREVIEW_USER;
 const isOAuthCallback = window.location.hash.includes('access_token') || window.location.hash.includes('type=recovery') || new URLSearchParams(window.location.search).has('code');
+// A failed e-mail link or OAuth round-trip comes back as #error=…&error_code=…&error_description=…
+// (or the same in the query string). Surface it once and strip it from the URL.
+function authErrorFromUrl(hash, search) {
+  const read = s => new URLSearchParams(String(s || '').replace(/^[#?]\/?/, ''));
+  for (const p of [read(hash), read(search)]) {
+    if (p.get('error') || p.get('error_code') || p.get('error_description'))
+      return { error: p.get('error') || '', code: p.get('error_code') || '', message: p.get('error_description') || '' };
+  }
+  return null;
+}
+const urlAuthError = (!PREVIEW_ROLE && !isOAuthCallback) ? authErrorFromUrl(window.location.hash, window.location.search) : null;
+if (urlAuthError) {
+  const info = authErrorMessage({ code: urlAuthError.code, message: urlAuthError.message || urlAuthError.error });
+  try { window.history.replaceState(null, '', window.location.pathname); } catch (_) {}
+  showAuthAlert('signin', info.text, info.action);
+  setTimeout(() => showToast(info.text), 4400);   // once the splash has faded
+}
 const splashVideo = document.getElementById('splash-video');
 let splashEnded = false;
 window.splashVideoEnded = function() {
@@ -475,83 +492,187 @@ window.doSignUp = async function() {
   const wantsOfficer = !!document.getElementById('signup-officer')?.checked;
   const badge = wantsOfficer ? (document.getElementById('signup-badge')?.value.trim() || '') : null;
   const btn = document.getElementById('btn-submit-signup');
-  if (!email || !password) { showToast('Please enter an email and password'); return; }
-  if (!isEmail(email)) { showToast('Please enter a valid email address'); return; }
-  if (password.length < 6) { showToast('Password must be at least 6 characters'); return; }
-  if (wantsOfficer && !badge) { showToast('Badge number is required to request reviewer access'); return; }
+  if (!email || !password) { showAuthAlert('signup', 'Please enter an email and password.'); return; }
+  if (!isEmail(email)) { showAuthAlert('signup', 'Please enter a valid email address.'); return; }
+  if (password.length < 6) { showAuthAlert('signup', 'Password must be at least 6 characters.'); return; }
+  if (wantsOfficer && !badge) { showAuthAlert('signup', 'Badge number is required to request reviewer access.'); return; }
   const sb = getSB();
-  if (!sb) { showToast('Connecting to authentication server...'); return; }
+  if (!sb) { showAuthAlert('signup', 'Connecting to the authentication server… try again in a moment.'); return; }
+  hideAuthAlert('signup');
   if (btn) { btn.textContent = 'Creating account…'; btn.disabled = true; }
   try {
-    const { data, error } = await sb.auth.signUp({ email, password, options: { data: { full_name: name || email.split('@')[0], role: wantsOfficer ? 'officer' : 'citizen', badge_number: badge || null } } });
-    if (error) { showToast('Registration failed: ' + error.message); return; }
-    if (!data.session) { showToast('Account created — check your inbox to confirm your e-mail, then sign in.'); switchAuthTab('signin'); return; }
+    const { data, error } = await sb.auth.signUp({
+      email, password,
+      options: { emailRedirectTo: authReturnUrl(), data: { full_name: name || email.split('@')[0], role: wantsOfficer ? 'officer' : 'citizen', badge_number: badge || null } },
+    });
+    if (error) {
+      const info = authErrorMessage(error, email);
+      if (info.code === 'email_exists') { toSignInWith(email, info.text, 'forgot'); return; }
+      showAuthAlert('signup', (info.code === 'unknown' ? 'Registration failed: ' : '') + info.text, info.action);
+      return;
+    }
+    // Anti-enumeration: an address that already has an account comes back as a user with no identities.
+    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      toSignInWith(email, 'An account with this e-mail already exists — sign in, or reset the password.', 'forgot');
+      return;
+    }
+    if (!data?.session) {   // e-mail confirmation is on: every password sign-up must open the link first
+      toSignInWith(email, `We e-mailed a confirmation link to ${email}. Open it, then sign in.` + (wantsOfficer ? ' Reviewer access is granted by an admin after you confirm.' : ''), null);
+      return;
+    }
     showToast(wantsOfficer ? 'Account created. Reviewer access requested — an admin will approve it.' : 'Account created successfully! Welcome to RoadWatch.');
-  } catch (err) { showToast('Error: ' + err.message); }
+  } catch (err) { showAuthAlert('signup', authErrorMessage(err, email).text); }
   finally { if (btn) { btn.textContent = 'Create Account'; btn.disabled = false; } }
 };
+// Switch to the sign-in tab with the address filled in and a persistent notice.
+function toSignInWith(email, text, action) {
+  switchAuthTab('signin');
+  const el = document.getElementById('login-email'); if (el) el.value = email;
+  showAuthAlert('signin', text, action);
+}
+
+const LOGIN_COOLDOWN_MS = 5000;
+let _badLogins = 0;   // consecutive invalid_credentials; three in a row pauses the button briefly
 window.doLogin = async function() {
   const email = document.getElementById('login-email')?.value?.trim() || '';
   const password = document.getElementById('login-pw')?.value || '';
   const btn = document.getElementById('btn-submit-signin');
-  if (!email || !password) { showToast('Please enter your email and password'); return; }
+  if (!email || !password) { showAuthAlert('signin', 'Please enter your email and password.'); return; }
   const sb = getSB();
-  if (!sb) { showToast('Supabase client unavailable. Please check your connection.'); return; }
+  if (!sb) { showAuthAlert('signin', 'Supabase client unavailable. Please check your connection.'); return; }
+  hideAuthAlert('signin');
   if (btn) { btn.textContent = 'Signing in…'; btn.disabled = true; }
+  let cooldown = 0;
   try {
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) { await explainAuthError(sb, error, email); return; }
+    if (error) {
+      const info = explainAuthError(error, email);
+      if (info.code === 'invalid_credentials' && _badLogins >= 3) cooldown = LOGIN_COOLDOWN_MS;
+      return;
+    }
+    _badLogins = 0;
     const profile = await fetchProfile(sb, data.user);
     showToast(`Welcome back, ${profile.full_name || email}!`);
     _safeEnterApp(data.user, profile);
-  } catch (err) { showToast(err.status === 0 || /failed to fetch/i.test(err.message) ? 'Could not reach the sign-in server. If this keeps happening, open /reset once to clear an old cached version.' : 'Sign-in error: ' + err.message); }
-  finally { if (btn) { btn.textContent = 'Sign in'; btn.disabled = false; } }
+  } catch (err) { showAuthAlert('signin', authErrorMessage(err, email).text); }
+  finally {
+    if (btn && cooldown) { btn.textContent = 'Wait a moment…'; setTimeout(() => { btn.textContent = 'Sign in'; btn.disabled = false; }, cooldown); }
+    else if (btn) { btn.textContent = 'Sign in'; btn.disabled = false; }
+  }
 };
+
+// Where confirmation, recovery and OAuth links land: always the site root. The "Admin access"
+// link opens index.html#admin, so pathname is not stable, and /reset must never be a target
+// (its Clear-Site-Data header would wipe the session the link just created).
+function authReturnUrl() { return window.location.origin + '/'; }
+
+// GoTrue error codes are contractual (supabase-js AuthApiError.code); the message text is only a
+// fallback. Returns { code, text, action } with action ∈ 'resend' | 'forgot' | null.
+function authErrorMessage(error, email) {
+  const code = String(error?.code || '').toLowerCase();
+  const m = String(error?.message || '').toLowerCase();
+  const status = Number(error?.status || 0);
+  const who = email ? ` (${email})` : '';
+  if (code === 'email_not_confirmed' || m.includes('email not confirmed'))
+    return { code: 'email_not_confirmed', action: 'resend', text: `Your e-mail${who} is not confirmed yet. Open the confirmation link in your inbox (check spam too), or request a new one.` };
+  if (code === 'invalid_credentials' || m.includes('invalid login credentials'))
+    return { code: 'invalid_credentials', action: 'forgot', text: 'Wrong e-mail or password. If you signed up with Google, use "Continue with Google" instead — that account has no password.' };
+  if (code === 'user_banned' || m.includes('user is banned') || m.includes('user banned'))
+    return { code: 'user_banned', action: null, text: 'This account has been suspended. Contact the RoadWatch team.' };
+  if (code === 'over_email_send_rate_limit' || m.includes('only request this after') || (m.includes('rate limit') && m.includes('email')))
+    return { code: 'over_email_send_rate_limit', action: null, text: 'Wait a minute before requesting another e-mail.' };
+  if (status === 429 || code === 'over_request_rate_limit' || m.includes('rate limit'))
+    return { code: 'over_request_rate_limit', action: null, text: 'Too many attempts — wait a minute and try again.' };
+  if (m.includes('not authorized') || m.includes('not authorised'))
+    return { code: 'smtp_not_configured', action: null, text: 'Supabase refused to send mail to this address: the project still uses the built-in mailer, which only reaches team members. The project owner must enable custom SMTP (Supabase → Authentication → SMTP Settings).' };
+  if (code === 'validation_failed' || m.includes('missing email'))
+    return { code: 'validation_failed', action: null, text: 'Please enter your e-mail and password.' };
+  if (code === 'signup_disabled' || m.includes('signups not allowed'))
+    return { code: 'signup_disabled', action: null, text: 'Sign-ups are closed at the moment.' };
+  if (code === 'same_password')
+    return { code: 'same_password', action: null, text: 'Choose a password different from the current one.' };
+  if (code === 'weak_password' || m.includes('password should'))
+    return { code: 'weak_password', action: null, text: error.message || 'Choose a stronger password.' };
+  if (code === 'email_exists' || code === 'user_already_exists' || m.includes('already registered') || m.includes('already been registered'))
+    return { code: 'email_exists', action: 'forgot', text: 'An account with this e-mail already exists — sign in, or reset the password.' };
+  if (code === 'email_address_invalid' || m.includes('validate email address'))
+    return { code: 'email_address_invalid', action: null, text: 'That e-mail address is not accepted (example/test domains are rejected). Use a real mailbox.' };
+  if (code === 'otp_expired' || m.includes('expired'))
+    return { code: 'otp_expired', action: 'forgot', text: 'That link has expired or was already used. Request a new one.' };
+  if (status === 0 || m.includes('failed to fetch') || m.includes('load failed') || m.includes('networkerror'))
+    return { code: 'network', action: null, text: 'Could not reach the sign-in server. If this keeps happening, open /reset once to clear an old cached version of the app.' };
+  return { code: code || 'unknown', action: null, text: error?.message || 'Unknown error' };
+}
+// Persistent inline notice under the auth form: a toast vanishes in 3 s, before a link can be tapped.
+function showAuthAlert(view, text, action) {
+  const box = document.getElementById(view === 'signup' ? 'signup-alert' : 'login-alert');
+  if (!box) { showToast(text); return; }
+  const links = {
+    resend: '<a href="#" onclick="doResendConfirmation(); return false;">Resend confirmation e-mail</a>',
+    forgot: '<a href="#" onclick="doForgotPassword(); return false;">Reset my password</a>',
+  };
+  const safe = String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  box.innerHTML = safe + (links[action] ? ' ' + links[action] : '');
+  box.hidden = false;
+}
+function hideAuthAlert(view) {
+  const box = document.getElementById(view === 'signup' ? 'signup-alert' : 'login-alert');
+  if (box) { box.hidden = true; box.innerHTML = ''; }
+}
 // GoTrue answers 400 for several different reasons; say which one and what to do about it.
-async function explainAuthError(sb, error, email) {
-  const m = String(error.message || '').toLowerCase();
-  if (m.includes('email not confirmed')) {
-    const r = await sb.auth.resend({ type: 'signup', email }).catch(e => ({ error: e }));
-    showToast(r?.error ? 'Your e-mail is not confirmed yet — open the confirmation link we sent you.' : `Your e-mail is not confirmed yet — a fresh confirmation link was just sent to ${email}.`);
-  } else if (m.includes('invalid login credentials')) showToast('Wrong e-mail or password. Use "Forgot password?" below if you need a reset.');
-  else if (error.status === 429 || m.includes('rate limit')) showToast('Too many attempts — wait a minute and try again.');
-  else if (m.includes('signups not allowed') || m.includes('user banned')) showToast('This account cannot sign in: ' + error.message);
-  else showToast('Sign-in failed: ' + error.message);
+// Never send mail as a side effect of a failed login: the project-wide quota of the built-in
+// mailer is two e-mails per hour, so an automatic resend here would burn it on retries. The
+// notice carries an explicit "Resend confirmation e-mail" link instead.
+function explainAuthError(error, email) {
+  const info = authErrorMessage(error, email);
+  const text = info.code === 'unknown' ? 'Sign-in failed: ' + info.text : info.text;
+  _badLogins = info.code === 'invalid_credentials' ? _badLogins + 1 : 0;
+  showAuthAlert('signin', text, info.action);
+  return info;
 }
 window.doResendConfirmation = async function() {
   const email = document.getElementById('login-email')?.value?.trim() || '';
-  if (!isEmail(email)) { showToast('Type your e-mail in the field above first.'); return; }
+  if (!isEmail(email)) { showAuthAlert('signin', 'Type your e-mail in the field above first.'); return; }
   const sb = getSB(); if (!sb) return;
-  const { error } = await sb.auth.resend({ type: 'signup', email });
-  showToast(error ? 'Could not resend: ' + error.message : `Confirmation link sent to ${email}. It may take a minute.`);
+  const { error } = await sb.auth.resend({ type: 'signup', email, options: { emailRedirectTo: authReturnUrl() } });
+  if (error) { showAuthAlert('signin', 'Could not resend — ' + authErrorMessage(error, email).text); return; }
+  showAuthAlert('signin', `Confirmation link sent to ${email}. It can take a minute; check spam too.`);
 };
 window.doForgotPassword = async function() {
   const email = document.getElementById('login-email')?.value?.trim() || '';
-  if (!isEmail(email)) { showToast('Type your e-mail in the field above first, then tap "Forgot password?".'); return; }
+  if (!isEmail(email)) { showAuthAlert('signin', 'Type your e-mail in the field above first, then tap "Forgot password?".'); return; }
   const sb = getSB(); if (!sb) return;
-  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}${window.location.pathname}` });
-  showToast(error ? 'Could not send the reset link: ' + error.message : `Password reset link sent to ${email}. Open it on this device.`);
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: authReturnUrl() });
+  if (error) { showAuthAlert('signin', 'Could not send the reset link — ' + authErrorMessage(error, email).text); return; }
+  showAuthAlert('signin', `Password reset link sent to ${email}. Open it on this device.`);
 };
-// The reset link signs the user in and fires PASSWORD_RECOVERY; ask for the new password right away.
+// The reset link signs the user in and fires PASSWORD_RECOVERY. The dialog lives inside #app,
+// which is not on screen until the splash ends and initApp() runs, so the auth listener only
+// sets pendingPasswordReset and initApp() opens the dialog once the shell is up (a timer raced
+// the shell and route()'s closeModal() destroyed the hidden dialog). keepModalOnRoute makes the
+// hash rewrite that follows a token landing leave it open.
+let pendingPasswordReset = false, keepModalOnRoute = false;
 function openPasswordReset() {
+  pendingPasswordReset = false;
   openModal(`<h3>Choose a new password</h3><p class="sub">You arrived from a password-reset link. Set a new password to finish.</p><form id="m-form">
     <div class="field"><label>New password (min 6 characters)</label><input class="input" name="password" type="password" minlength="6" required autocomplete="new-password"></div>
     <div class="field"><label>Repeat it</label><input class="input" name="password2" type="password" minlength="6" required autocomplete="new-password"></div>
     <div class="modal-actions"><button class="btn" type="button" data-action="modal-close">Later</button><button class="btn btn-signal" type="submit">Save password</button></div></form>`);
+  keepModalOnRoute = true;
   document.getElementById('m-form').onsubmit = async e => {
     e.preventDefault();
     const p1 = e.target.password.value, p2 = e.target.password2.value;
     if (p1.length < 6) { showToast('Password must be at least 6 characters'); return; }
     if (p1 !== p2) { showToast('The two passwords do not match'); return; }
     const { error } = await getSB().auth.updateUser({ password: p1 });
-    if (error) { showToast('Could not save the password: ' + error.message); return; }
+    if (error) { showToast('Could not save the password: ' + authErrorMessage(error).text); return; }
     closeModal(); showToast('Password updated — you are signed in.');
   };
 }
 window.doGoogleLogin = async function() {
   const sb = getSB();
   if (!sb) { showToast('Supabase client unavailable. Please check your connection.'); return; }
-  const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: `${window.location.origin}${window.location.pathname}` } });
+  const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: authReturnUrl() } });
   if (error) showToast('Google sign-in failed: ' + error.message);
 };
 window.doLogout = async function() {
@@ -640,7 +761,8 @@ function route() {
   const title = document.getElementById('header-title');
   if (title) title.textContent = TITLES[page] || page;
   window.scrollTo(0, 0);
-  closeUserMenu(); closeDrawer(); closeModal();
+  closeUserMenu(); closeDrawer();
+  if (keepModalOnRoute) keepModalOnRoute = false; else closeModal();
   currentPage = page; currentId = id || null;
   const el = document.getElementById('page');
   if (el) { el.classList.remove('active'); void el.offsetWidth; el.classList.add('active'); }
@@ -666,6 +788,7 @@ function initApp() {
   startStatusPolling();
   const ver = document.getElementById('app-foot-version'); if (ver) ver.textContent = 'web v5.0';
   route();
+  if (pendingPasswordReset) openPasswordReset();
 }
 function teardownApp() {
   appInited = false; currentPage = null;
@@ -1584,6 +1707,7 @@ function openModal(html) {
   setTimeout(() => body?.querySelector('textarea,input,select,button')?.focus(), 30);
 }
 function closeModal() {
+  keepModalOnRoute = false;   // a user-initiated close is never kept
   document.getElementById('modal-backdrop')?.classList.remove('open');
   const body = document.getElementById('modal-body'); if (body) body.innerHTML = '';
 }
@@ -1688,8 +1812,9 @@ async function initAuthSession() {
     _authListenerRegistered = true;
     sb.auth.onAuthStateChange(async (event, session) => {
       if (event === 'PASSWORD_RECOVERY' && session?.user) {
-        // the recovery link also signs the user in; the app shell may still be entering
-        setTimeout(openPasswordReset, 700);
+        // the recovery link also signs the user in; initApp() opens the dialog once the shell is up
+        if (appInited && appEl?.classList.contains('active')) openPasswordReset();
+        else pendingPasswordReset = true;
         return;
       }
       if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {

@@ -27,12 +27,17 @@
       .then(function () { return ('caches' in window) ? caches.keys() : []; })
       .then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); });
   } catch (e) {}
-  done.then(function () {
-    if (controlled && !sessionStorage.getItem('rw-sw-purged')) {
+  done.catch(function () {}).then(function () {
+    // /reset exists only to deliver the Clear-Site-Data header. Never stay on it: a Google or
+    // reset-link sign-in that landed here would have its fresh session wiped on arrival.
+    if (location.pathname === '/reset' || location.pathname === '/reset/') { location.replace('/' + location.search + location.hash); return; }
+    var purged = false;
+    try { purged = !!sessionStorage.getItem('rw-sw-purged'); } catch (e) {}
+    if (controlled && !purged) {
       try { sessionStorage.setItem('rw-sw-purged', '1'); } catch (e) {}
       location.reload();
     }
-  }).catch(function () {});
+  });
 })();
 </script>
 <!-- Supabase JS —— CDN, safe to load publicly -->
@@ -485,6 +490,12 @@ tr.muted td{opacity:.55}
 }
 .auth-helper-text a{color:rgba(255,74,38,.8);font-weight:600;transition:color .15s}
 .auth-helper-text a:hover{color:var(--signal)}
+.auth-alert{
+  margin-top:12px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.5;
+  background:rgba(255,74,38,.10);border:1px solid rgba(255,74,38,.35);color:rgba(251,250,247,.9);
+}
+.auth-alert[hidden]{display:none}
+.auth-alert a{color:var(--signal);font-weight:600;text-decoration:underline;white-space:nowrap}
 
 /* ── User Header Chip & Dropdown ─────────────────────────── */
 .user-chip{
@@ -1446,12 +1457,13 @@ tr.muted td{opacity:.55}
       </div>
       <div class="field-wrap" style="margin-bottom:0">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
-        <input id="login-pw" type="password" placeholder="Password" autocomplete="current-password" data-has-toggle="true">
+        <input id="login-pw" type="password" placeholder="Password" autocomplete="current-password" data-has-toggle="true" onkeydown="if(event.key==='Enter'){event.preventDefault();doLogin()}">
         <button class="pw-toggle" onclick="togglePw('login-pw')" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
       </div>
       <button class="btn-signin" id="btn-submit-signin" onclick="doLogin()" style="margin-top:14px">Sign in</button>
+      <div id="login-alert" class="auth-alert" role="alert" aria-live="polite" hidden></div>
       <div class="auth-helper-text" style="margin-top:10px"><a href="#" onclick="doForgotPassword(); return false;">Forgot password?</a> · <a href="#" onclick="doResendConfirmation(); return false;">Resend confirmation e-mail</a></div>
 
       <div class="divider-or"><span>or continue with</span></div>
@@ -1489,7 +1501,7 @@ tr.muted td{opacity:.55}
       </div>
       <div class="field-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
-        <input id="signup-pw" type="password" placeholder="Create password (min 6 chars)" autocomplete="new-password" data-has-toggle="true">
+        <input id="signup-pw" type="password" placeholder="Create password (min 6 chars)" autocomplete="new-password" data-has-toggle="true" onkeydown="if(event.key==='Enter'){event.preventDefault();doSignUp()}">
         <button class="pw-toggle" onclick="togglePw('signup-pw')" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
@@ -1500,6 +1512,7 @@ tr.muted td{opacity:.55}
       </div>
 
       <button class="btn-signin" id="btn-submit-signup" onclick="doSignUp()" style="margin-top:6px">Create Account</button>
+      <div id="signup-alert" class="auth-alert" role="alert" aria-live="polite" hidden></div>
 
       <div class="divider-or"><span>or continue with</span></div>
       <div class="social-btns">
