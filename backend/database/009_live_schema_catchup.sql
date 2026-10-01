@@ -23,6 +23,7 @@ alter table public.videos add constraint videos_status_check
 alter table public.vehicle_records drop constraint if exists vehicle_records_review_status_check;
 alter table public.vehicle_records add constraint vehicle_records_review_status_check
   check (review_status in ('clear', 'needs_review', 'pending_review', 'confirmed', 'rejected'));
+alter table public.vehicle_records alter column review_status set default 'clear';   -- 002's intent; the column pre-existed, so its ADD COLUMN was a no-op
 
 -- A3. evidence keeps its pre-003 shape: vehicle_id and image_url are NOT NULL without defaults
 --     (persist_run_result supplies neither), and the unique (finding_id, blob_path) that its
